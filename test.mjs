@@ -25,9 +25,37 @@ test('slow slashes and hits inside the cooldown do not damage the boss', () => {
 test('boss patrol remains inside the arena bounds', () => {
   const boss = createBoss(TUNING.boss, 960);
   boss.x = 960 - TUNING.boss.radius;
-  updateBoss(boss, 1, TUNING.boss, 960);
+  boss.y = 540 - TUNING.boss.radius;
+  boss.vx = Math.abs(boss.vx);
+  boss.vy = Math.abs(boss.vy);
+  updateBoss(boss, 0.01, TUNING.boss, 960, 540);
   assert.equal(boss.x, 960 - TUNING.boss.radius);
-  assert.equal(boss.direction, -1);
+  assert.equal(boss.y, 540 - TUNING.boss.radius);
+  assert.ok(boss.vx < 0);
+  assert.ok(boss.vy < 0);
+});
+
+test('boss follows diagonal paths and changes direction without losing speed', () => {
+  const boss = createBoss(TUNING.boss, 960);
+  const start = { vx: boss.vx, vy: boss.vy };
+  const startSpeed = Math.hypot(start.vx, start.vy);
+  assert.notEqual(start.vx, 0);
+  assert.notEqual(start.vy, 0);
+  updateBoss(boss, TUNING.boss.turnInterval, TUNING.boss, 960, 540);
+  assert.notEqual(boss.vx, start.vx);
+  assert.notEqual(boss.vy, start.vy);
+  assert.ok(Math.abs(Math.hypot(boss.vx, boss.vy) - startSpeed) < 0.001);
+
+  const patrol = createBoss(TUNING.boss, 960);
+  let bouncedX = false, bouncedY = false;
+  for (let frame = 0; frame < 300; frame++) {
+    const oldX = patrol.x, oldY = patrol.y;
+    updateBoss(patrol, 1 / 60, TUNING.boss, 960, 540);
+    if (patrol.x !== oldX && (patrol.x === TUNING.boss.radius || patrol.x === 960 - TUNING.boss.radius)) bouncedX = true;
+    if (patrol.y !== oldY && (patrol.y === TUNING.boss.radius || patrol.y === 540 - TUNING.boss.radius)) bouncedY = true;
+  }
+  assert.equal(bouncedX, true);
+  assert.equal(bouncedY, true);
 });
 
 test('enemy attacks are suppressed while the boss is alive', () => {

@@ -3,31 +3,41 @@ export function shouldSpawnBoss(enabled, alreadyAppeared, timeLeft, appearAt) {
 }
 
 export function createBoss(tuning, arenaWidth) {
+  const angle = tuning.startAngle;
   return {
     x: arenaWidth / 2,
     y: tuning.centerY,
     hp: tuning.hp,
     maxHp: tuning.hp,
-    direction: 1,
+    heading: angle,
+    vx: Math.cos(angle) * tuning.moveSpeed,
+    vy: Math.sin(angle) * tuning.moveSpeed,
+    turnTimer: tuning.turnInterval,
     hitCooldown: 0,
   };
 }
 
-export function updateBoss(boss, deltaSeconds, tuning, arenaWidth) {
+export function updateBoss(boss, deltaSeconds, tuning, arenaWidth, arenaHeight) {
   if (!boss || boss.hp <= 0) return;
   boss.hitCooldown = Math.max(0, boss.hitCooldown - deltaSeconds);
-  const left = tuning.radius;
-  const right = arenaWidth - tuning.radius;
-  const nextX = boss.x + boss.direction * tuning.moveSpeed * deltaSeconds;
-  if (nextX >= right) {
-    boss.x = right;
-    boss.direction = -1;
-  } else if (nextX <= left) {
-    boss.x = left;
-    boss.direction = 1;
-  } else {
-    boss.x = nextX;
+  boss.turnTimer -= deltaSeconds;
+  while (boss.turnTimer <= 0) {
+    boss.heading += tuning.turnAngle;
+    boss.vx = Math.cos(boss.heading) * tuning.moveSpeed;
+    boss.vy = Math.sin(boss.heading) * tuning.moveSpeed;
+    boss.turnTimer += tuning.turnInterval;
   }
+
+  const left = tuning.radius, right = arenaWidth - tuning.radius;
+  const top = tuning.radius, bottom = arenaHeight - tuning.radius;
+  boss.x += boss.vx * deltaSeconds;
+  boss.y += boss.vy * deltaSeconds;
+  let bounced = false;
+  if (boss.x >= right) { boss.x = right; boss.vx = -Math.abs(boss.vx); bounced = true; }
+  else if (boss.x <= left) { boss.x = left; boss.vx = Math.abs(boss.vx); bounced = true; }
+  if (boss.y >= bottom) { boss.y = bottom; boss.vy = -Math.abs(boss.vy); bounced = true; }
+  else if (boss.y <= top) { boss.y = top; boss.vy = Math.abs(boss.vy); bounced = true; }
+  if (bounced) boss.heading = Math.atan2(boss.vy, boss.vx);
 }
 
 export function damageBoss(boss, speed, tuning) {

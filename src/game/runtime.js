@@ -596,7 +596,7 @@ function updatePlay(dt) {
   if (feverT > 0) feverT = Math.max(0, feverT - dt);
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
   maybeSpawnBoss();
-  updateBoss(boss, dt, TUNING.boss, W);
+  updateBoss(boss, dt, TUNING.boss, W, H);
   updateSpawner(dt);
   for (const m of monsters) updateMonster(m, dt);
   updateAttacks(dt);
@@ -984,7 +984,7 @@ function drawBoss() {
   if (SPR.boss) {
     ctx.drawImage(SPR.boss, -radius, -radius, radius * 2, radius * 2);
   } else {
-    drawSlime({ r: radius, vx: boss.direction * TUNING.boss.moveSpeed, vy: 0 });
+    drawSlime({ r: radius, vx: boss.vx, vy: boss.vy });
     ctx.fillStyle = '#ffd23f';
     ctx.strokeStyle = '#8b5a00';
     ctx.lineWidth = 4;

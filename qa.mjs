@@ -11,7 +11,7 @@ test('boss can be defeated in fifteen cooldown-spaced slashes for a flat bonus',
     const result = damageBoss(boss, TUNING.boss.minSpeed, TUNING.boss);
     assert.equal(result.applied, true);
     bonus += result.bonus;
-    updateBoss(boss, TUNING.boss.hitCooldown, TUNING.boss, 960);
+    updateBoss(boss, TUNING.boss.hitCooldown, TUNING.boss, 960, 540);
   }
 
   assert.equal(boss.hp, 0);
