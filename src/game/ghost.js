@@ -2,52 +2,43 @@ function validNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-export function createGhostSample(time, pointers, score, interval) {
-  return {
-    t: Math.round(time / interval) * interval,
-    p: pointers.map(pointer => ({ x: Math.round(pointer.x), y: Math.round(pointer.y) })),
-    s: Math.round(score),
-  };
+// 座標は0〜1（小数第3位まで）にして保存する。表示のときに、そのときの幅・高さを掛ける
+export function normalizeGhostPoint(x, y, width, height) {
+  const nx = width > 0 ? Math.min(1, Math.max(0, x / width)) : 0;
+  const ny = height > 0 ? Math.min(1, Math.max(0, y / height)) : 0;
+  return { x: Math.round(nx * 1000) / 1000, y: Math.round(ny * 1000) / 1000 };
 }
 
-export function packGhost(samples, tuning) {
-  if (!samples.length) return null;
-  const strideSamples = stride => samples
-    .filter((_, index) => index === 0 || index === samples.length - 1 || index % stride === 0)
-    .map(sample => [
-      Math.round(sample.t / tuning.interval),
-      Math.round(sample.p[0].x),
-      Math.round(sample.p[0].y),
-      Math.round(sample.p[1].x),
-      Math.round(sample.p[1].y),
-      Math.round(sample.s),
-    ]);
-
-  let stride = 1;
-  let packed = { version: 1, samples: strideSamples(stride) };
-  while (JSON.stringify(packed).length * 2 > tuning.maxBytes && stride < samples.length) {
-    stride *= 2;
-    packed = { version: 1, samples: strideSamples(stride) };
-  }
-  if (JSON.stringify(packed).length * 2 > tuning.maxBytes) {
-    throw new RangeError('Ghost recording exceeds the configured storage limit');
-  }
-  return packed;
+export function createGhostSample(time, points, score) {
+  return { t: time, p: points, s: Math.round(score) };
 }
 
-export function unpackGhost(value, tuning) {
-  if (!value || value.version !== 1 || !Array.isArray(value.samples)) return null;
+// 手が一度も検出されなかったラウンド（すべてのpが空）かどうか
+export function hasAnyHand(samples) {
+  return samples.some(sample => sample.p.length > 0);
+}
+
+export function packGhost(samples) {
+  if (!samples || !samples.length) return null;
+  return { version: 2, samples: samples.map(s => [s.t, s.p.map(p => [p.x, p.y]), s.s]) };
+}
+
+export function unpackGhost(value) {
+  if (!value || value.version !== 2 || !Array.isArray(value.samples)) return null;
   const samples = [];
-  let previousTime = -1;
+  let previousTime = -Infinity;
   for (const row of value.samples) {
-    if (!Array.isArray(row) || row.length !== 6 || !row.every(validNumber)) continue;
-    const time = row[0] * tuning.interval;
-    if (time < 0 || time <= previousTime) continue;
-    samples.push({
-      t: time,
-      p: [{ x: row[1], y: row[2] }, { x: row[3], y: row[4] }],
-      s: row[5],
-    });
+    if (!Array.isArray(row) || row.length !== 3) continue;
+    const [time, pts, score] = row;
+    if (!validNumber(time) || time <= previousTime || !validNumber(score) || !Array.isArray(pts)) continue;
+    const points = [];
+    let ok = true;
+    for (const pt of pts) {
+      if (!Array.isArray(pt) || pt.length !== 2 || !validNumber(pt[0]) || !validNumber(pt[1])) { ok = false; break; }
+      points.push({ x: pt[0], y: pt[1] });
+    }
+    if (!ok) continue;
+    samples.push({ t: time, p: points, s: score });
     previousTime = time;
   }
   return samples.length ? samples : null;
@@ -69,14 +60,15 @@ export function sampleGhost(samples, time) {
   const after = samples[low];
   const before = samples[low - 1];
   const ratio = (time - before.t) / (after.t - before.t);
-  return {
-    t: time,
-    p: before.p.map((point, index) => ({
-      x: point.x + (after.p[index].x - point.x) * ratio,
-      y: point.y + (after.p[index].y - point.y) * ratio,
-    })),
-    s: before.s + (after.s - before.s) * ratio,
-  };
+  const handCount = Math.min(before.p.length, after.p.length);
+  const points = [];
+  for (let i = 0; i < handCount; i++) {
+    points.push({
+      x: before.p[i].x + (after.p[i].x - before.p[i].x) * ratio,
+      y: before.p[i].y + (after.p[i].y - before.p[i].y) * ratio,
+    });
+  }
+  return { t: time, p: points, s: before.s + (after.s - before.s) * ratio };
 }
 
 export function ghostResultText(score, samples) {

@@ -3,7 +3,24 @@ import test from 'node:test';
 import { TUNING } from './src/config.js';
 import { bossHpPercent, createBoss, damageBoss, damageBossFlat, reflectDamageBoss, shouldSpawnBoss, updateBoss, updateBossShots } from './src/game/boss.js';
 import { createAttacks } from './src/game/attacks.js';
-import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './src/game/ghost.js';
+import { createGhostSample, ghostResultText, hasAnyHand, normalizeGhostPoint, packGhost, sampleGhost, unpackGhost } from './src/game/ghost.js';
+import {
+  addGauge, classifyHandShape, consumeFist, countBentFingers, createGestureState, createHoldTracker,
+  shotInsideShield, tryActivateShield, updateHold, updateShieldTimers,
+} from './src/game/gesture.js';
+
+// にせAIの手: 曲がっている指の本数(0〜4)・大きさ・位置を指定して、21点のランドマーク（画面ピクセル座標）を作る
+function makeHandLandmarks({ bentCount = 0, size = 150, cx = 480, cy = 270 } = {}) {
+  const points = new Array(21).fill(null).map(() => ({ x: cx, y: cy }));
+  points[0] = { x: cx, y: cy + size };   // 手首
+  points[9] = { x: cx, y: cy + size * 0.4 };   // 手のひら中心
+  [[8, 6], [12, 10], [16, 14], [20, 18]].forEach(([tip, pip], i) => {
+    const bent = i < bentCount, fx = cx + (i - 1.5) * size * 0.12;
+    points[pip] = { x: fx, y: cy + size - size * 0.5 };
+    points[tip] = { x: fx, y: cy + size - (bent ? size * 0.2 : size * 0.9) };
+  });
+  return points;
+}
 
 const noop = () => {};
 const SndStub = { charge: noop, launch: noop, clang: noop, hurt: noop, big: noop, impact: noop };
@@ -187,19 +204,49 @@ test('ghost samples interpolate both hand positions and the previous score at th
   });
 });
 
-test('ghost storage round-trips coordinate and score data within the configured size cap', () => {
-  const samples = Array.from({ length: TUNING.ghost.maxSamples }, (_, index) =>
-    createGhostSample(index * TUNING.ghost.interval, [{ x: index % 960, y: 270 }, { x: 700, y: 400 }], index * 1000, TUNING.ghost.interval));
-  const packed = packGhost(samples, TUNING.ghost);
+test('ghost storage round-trips a 60s round (variable hand count, normalized coords), with no extra personal data', () => {
+  const sampleCount = Math.round(60 / TUNING.ghost.interval);
+  const samples = Array.from({ length: sampleCount }, (_, index) => {
+    const t = index * TUNING.ghost.interval;
+    const hands = index % 7 === 0 ? [] : index % 3 === 0 ? [normalizeGhostPoint(index % 960, 270, 960, 540)] : [normalizeGhostPoint(index % 960, 270, 960, 540), normalizeGhostPoint(700, 400, 960, 540)];
+    return createGhostSample(t, hands, index * 10);
+  });
+  const packed = packGhost(samples);
   const serialized = JSON.stringify(packed);
-  const restored = unpackGhost(JSON.parse(serialized), TUNING.ghost);
-  assert.ok(serialized.length * 2 <= TUNING.ghost.maxBytes);
+  const restored = unpackGhost(JSON.parse(serialized));
   assert.equal(restored[0].t, 0);
   assert.equal(restored[restored.length - 1].t, samples[samples.length - 1].t);
   assert.equal(restored[restored.length - 1].s, samples[samples.length - 1].s);
+  assert.equal(restored.some(s => s.p.length === 0), true);
+  assert.equal(restored.some(s => s.p.length === 1), true);
+  assert.equal(restored.some(s => s.p.length === 2), true);
+  assert.ok(restored.every(s => s.p.every(p => p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)));
   assert.equal(serialized.includes('name'), false);
   assert.equal(serialized.includes('face'), false);
   assert.equal(serialized.includes('video'), false);
+});
+
+test('normalizeGhostPoint clamps to 0..1 and keeps 3 decimal places', () => {
+  assert.deepEqual(normalizeGhostPoint(480, 270, 960, 540), { x: 0.5, y: 0.5 });
+  assert.deepEqual(normalizeGhostPoint(-50, 1000, 960, 540), { x: 0, y: 1 });
+  assert.deepEqual(normalizeGhostPoint(960 + 50, 540 + 50, 960, 540), { x: 1, y: 1 });
+});
+
+test('hasAnyHand is false only when every recorded sample has an empty hand list', () => {
+  assert.equal(hasAnyHand([createGhostSample(0, [], 0), createGhostSample(0.1, [], 10)]), false);
+  assert.equal(hasAnyHand([createGhostSample(0, [], 0), createGhostSample(0.1, [{ x: 0.5, y: 0.5 }], 10)]), true);
+});
+
+test('a ghost sample recorded right at the round end is used as the final comparison score', () => {
+  const samples = [
+    createGhostSample(0, [{ x: 0.1, y: 0.1 }], 0),
+    createGhostSample(30, [{ x: 0.9, y: 0.9 }], 420),
+  ];
+  const packed = packGhost(samples);
+  const restored = unpackGhost(packed);
+  assert.equal(ghostResultText(419, restored), 'あと1点で前の人こえ');
+  assert.equal(ghostResultText(420, restored), '前の人と同点！');
+  assert.equal(ghostResultText(421, restored), '前の人をこえた！');
 });
 
 test('ghost result explains whether the previous player was passed', () => {
@@ -207,4 +254,112 @@ test('ghost result explains whether the previous player was passed', () => {
   assert.equal(ghostResultText(600, previous), '前の人をこえた！');
   assert.equal(ghostResultText(450, previous), 'あと50点で前の人こえ');
   assert.equal(ghostResultText(500, previous), '前の人と同点！');
+});
+
+test('countBentFingers counts 0 to 4 bent fingers from synthetic landmarks', () => {
+  for (let bentCount = 0; bentCount <= 4; bentCount++) {
+    assert.equal(countBentFingers(makeHandLandmarks({ bentCount })), bentCount);
+  }
+});
+
+test('classifyHandShape: 2 bent fingers is neither, 3 is a fist, 0 is an open hand', () => {
+  assert.equal(classifyHandShape(makeHandLandmarks({ bentCount: 2 }), TUNING.gesture), 'none');
+  assert.equal(classifyHandShape(makeHandLandmarks({ bentCount: 3 }), TUNING.gesture), 'fist');
+  assert.equal(classifyHandShape(makeHandLandmarks({ bentCount: 4 }), TUNING.gesture), 'fist');
+  assert.equal(classifyHandShape(makeHandLandmarks({ bentCount: 0 }), TUNING.gesture), 'open');
+  assert.equal(classifyHandShape(makeHandLandmarks({ bentCount: 1 }), TUNING.gesture), 'none');
+});
+
+test('hand size and position do not affect the shape classification', () => {
+  assert.equal(classifyHandShape(makeHandLandmarks({ bentCount: 3, size: 40, cx: 100, cy: 500 }), TUNING.gesture), 'fist');
+  assert.equal(classifyHandShape(makeHandLandmarks({ bentCount: 0, size: 300, cx: 800, cy: 50 }), TUNING.gesture), 'open');
+});
+
+test('a fist hold of 0.49s does not trigger; 0.50s does', () => {
+  const tracker = createHoldTracker();
+  for (let i = 0; i < 49; i++) updateHold(tracker, true, 0.01, TUNING.gesture.graceMs);
+  assert.ok(tracker.held < TUNING.gesture.fistHold);
+  updateHold(tracker, true, 0.01, TUNING.gesture.graceMs);
+  assert.ok(tracker.held >= TUNING.gesture.fistHold);
+});
+
+test('a gap of up to graceMs while the shape breaks does not reset the hold timer', () => {
+  const tracker = createHoldTracker();
+  updateHold(tracker, true, 0.3, TUNING.gesture.graceMs);
+  updateHold(tracker, false, TUNING.gesture.graceMs / 1000 - 0.001, TUNING.gesture.graceMs);   // 120ms未満の途切れ
+  assert.equal(tracker.held, 0.3);   // リセットされない
+  updateHold(tracker, true, 0.2, TUNING.gesture.graceMs);
+  assert.ok(Math.abs(tracker.held - 0.5) < 1e-9);
+});
+
+test('a gap longer than graceMs resets the hold timer', () => {
+  const tracker = createHoldTracker();
+  updateHold(tracker, true, 0.3, TUNING.gesture.graceMs);
+  updateHold(tracker, false, TUNING.gesture.graceMs / 1000 + 0.001, TUNING.gesture.graceMs);
+  assert.equal(tracker.held, 0);
+});
+
+test('gauge: +10% per enemy, +2% per boss hit, capped at 100%', () => {
+  const g = createGestureState();
+  for (let i = 0; i < 9; i++) addGauge(g, TUNING.gesture.gaugeEnemy);
+  assert.equal(g.gauge, 90);
+  addGauge(g, TUNING.gesture.gaugeBossHit);
+  assert.equal(g.gauge, 92);
+  addGauge(g, TUNING.gesture.gaugeEnemy);
+  assert.equal(g.gauge, 100);   // 100%で止まる
+});
+
+test('consumeFist needs both gauge 100% and the fistHold duration; resets both on success', () => {
+  const g = createGestureState();
+  g.gauge = 99; g.fist.held = TUNING.gesture.fistHold;
+  assert.equal(consumeFist(g, TUNING.gesture), false);   // ゲージが99%
+  g.gauge = 100; g.fist.held = TUNING.gesture.fistHold - 0.01;
+  assert.equal(consumeFist(g, TUNING.gesture), false);   // 保持が足りない
+  g.fist.held = TUNING.gesture.fistHold;
+  assert.equal(consumeFist(g, TUNING.gesture), true);
+  assert.equal(g.gauge, 0);
+  assert.equal(g.fist.held, 0);
+});
+
+test('shield activates at openHold (0.29s does not, 0.30s does)', () => {
+  const g = createGestureState();
+  g.open.held = TUNING.gesture.openHold - 0.01;
+  assert.equal(tryActivateShield(g, TUNING.gesture), false);
+  g.open.held = TUNING.gesture.openHold;
+  assert.equal(tryActivateShield(g, TUNING.gesture), true);
+  assert.equal(g.shieldActive, true);
+  assert.equal(g.shieldTimeLeft, TUNING.gesture.shieldDuration);
+  assert.equal(g.shieldCooldownLeft, TUNING.gesture.shieldCooldown);
+  assert.equal(g.open.held, 0);
+});
+
+test('the shield lasts shieldDuration seconds, then turns off', () => {
+  const g = createGestureState();
+  g.open.held = TUNING.gesture.openHold;
+  tryActivateShield(g, TUNING.gesture);
+  updateShieldTimers(g, TUNING.gesture.shieldDuration - 0.01);
+  assert.equal(g.shieldActive, true);
+  updateShieldTimers(g, 0.02);
+  assert.equal(g.shieldActive, false);
+});
+
+test('the shield cannot be reactivated before an 8s cooldown elapses, counted from the moment of activation', () => {
+  const g = createGestureState();
+  g.open.held = TUNING.gesture.openHold;
+  tryActivateShield(g, TUNING.gesture);   // クールダウンは、この瞬間から数え始める
+  updateShieldTimers(g, TUNING.gesture.shieldCooldown - 0.01);
+  g.open.held = TUNING.gesture.openHold;
+  assert.equal(tryActivateShield(g, TUNING.gesture), false);   // まだ0.01びょう残っている
+  updateShieldTimers(g, 0.02);
+  g.open.held = TUNING.gesture.openHold;
+  assert.equal(tryActivateShield(g, TUNING.gesture), true);   // 8びょう経過で再使用できる
+});
+
+test('fireballs inside an active shield are consumed; an inactive shield consumes nothing', () => {
+  const g = createGestureState();
+  g.shieldActive = true; g.shieldX = 500; g.shieldY = 300;
+  assert.equal(shotInsideShield(500 + TUNING.gesture.shieldRadius - 1, 300, g, TUNING.gesture.shieldRadius), true);
+  assert.equal(shotInsideShield(500 + TUNING.gesture.shieldRadius + 1, 300, g, TUNING.gesture.shieldRadius), false);
+  g.shieldActive = false;
+  assert.equal(shotInsideShield(500, 300, g, TUNING.gesture.shieldRadius), false);
 });

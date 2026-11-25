@@ -21,12 +21,13 @@ test('boss can be defeated in fifteen cooldown-spaced slashes for a flat bonus',
 
 test('a second-round ghost can be restored and replayed at its matching timestamp', () => {
   const current = [
-    createGhostSample(0, [{ x: 40, y: 60 }, { x: 80, y: 100 }], 0, TUNING.ghost.interval),
-    createGhostSample(0.1, [{ x: 60, y: 80 }, { x: 100, y: 120 }], 50, TUNING.ghost.interval),
-    createGhostSample(0.2, [{ x: 80, y: 100 }, { x: 120, y: 140 }], 100, TUNING.ghost.interval),
+    createGhostSample(0, [{ x: 0.04, y: 0.06 }, { x: 0.08, y: 0.1 }], 0),
+    createGhostSample(0.1, [{ x: 0.06, y: 0.08 }, { x: 0.1, y: 0.12 }], 50),
+    createGhostSample(0.2, [{ x: 0.08, y: 0.1 }, { x: 0.12, y: 0.14 }], 100),
   ];
-  const previousPlayer = unpackGhost(packGhost(current, TUNING.ghost), TUNING.ghost);
+  const previousPlayer = unpackGhost(packGhost(current));
   const replay = sampleGhost(previousPlayer, 0.15);
-  assert.deepEqual(replay.p, [{ x: 70, y: 90 }, { x: 110, y: 130 }]);
+  const round3 = n => Math.round(n * 1000) / 1000;
+  assert.deepEqual(replay.p.map(p => ({ x: round3(p.x), y: round3(p.y) })), [{ x: 0.07, y: 0.09 }, { x: 0.11, y: 0.13 }]);
   assert.equal(replay.s, 75);
 });

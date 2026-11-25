@@ -6,8 +6,9 @@ import { createAudio } from '../audio/audio.js';
 import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
 import { createAttacks } from './attacks.js';
-import { bossHpPercent, createBoss, damageBoss, reflectDamageBoss, shouldSpawnBoss, updateBoss, updateBossShots } from './boss.js';
-import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
+import { bossHpPercent, createBoss, damageBoss, damageBossFlat, reflectDamageBoss, shouldSpawnBoss, updateBoss, updateBossShots } from './boss.js';
+import { createGhostSample, ghostResultText, hasAnyHand, normalizeGhostPoint, packGhost, sampleGhost, unpackGhost } from './ghost.js';
+import { addGauge, classifyHandShape, consumeFist, createGestureState, shotInsideShield, tryActivateShield, updateHold, updateShieldTimers } from './gesture.js';
 
 
 // ============================================================
@@ -55,6 +56,7 @@ const S = {
   attack: qs.has('attack') ? qs.get('attack') !== '0' : store.get('attack', true) !== false,
   boss: qs.has('boss') ? qs.get('boss') !== '0' : store.get('boss', true) !== false,
   ghost: qs.has('ghost') ? qs.get('ghost') !== '0' : store.get('ghostEnabled', true) !== false,
+  gesture: qs.has('gesture') ? qs.get('gesture') !== '0' : store.get('gesture', true) !== false,
 };
 const diffCfg = () => TUNING.difficulty[S.diff];
 
@@ -231,9 +233,9 @@ function aiStep(t, dt) {
   AI.hands = all.map(h => { const pts = h.map(l => mapNorm(l.x, l.y)); return { lm: h, pts, raw: pts, size: Math.hypot(pts[0].x - pts[9].x, pts[0].y - pts[9].y), ok: false }; });
   predictHands(t, dt * every);
   const valid = AI.hands.filter(h => h.size >= minPx).sort((a, b) => b.size - a.size).slice(0, 2);
-  for (const h of valid) h.ok = true;
+  for (const h of valid) { h.ok = true; h.shape = S.gesture ? classifyHandShape(h.raw, TUNING.gesture) : 'none'; }
   AI.valid = valid.length;
-  assignHands(valid.map(h => h.pts), t);
+  assignHands(valid, t);
 }
 // 検出した手の位置は「少し前のコマ」のもの。手を動かしていると、その遅れのぶん点が実際の手からずれて見える。
 // 前回との差から速さを出し、遅れのぶんだけ先に進めた位置を使う（手を止めているときは何も変わらない）
@@ -256,7 +258,7 @@ function switchToMotion() { runMode = 'motion'; Motion.reset(); AI.hands = []; A
 // ============================================================
 //  ゆび（ポインタ）… AIの手 / マウス / タッチ のどれでも同じように扱う
 // ============================================================
-const mkPtr = color => ({ active: false, x: 0, y: 0, ox: 0, oy: 0, miss: 0, trail: [], color });
+const mkPtr = color => ({ active: false, x: 0, y: 0, ox: 0, oy: 0, miss: 0, trail: [], color, shape: 'none', palm: { x: 0, y: 0 } });
 const ptrs = [mkPtr('#2ef2ff'), mkPtr('#ff2e88')];
 function ptrMove(p, x, y, t, k) {
   if (!p.active) { p.active = true; p.x = x; p.y = y; p.ox = x; p.oy = y; p.trail.length = 0; }
@@ -267,16 +269,25 @@ function ptrMove(p, x, y, t, k) {
   }
   p.miss = 0; p.trail.push({ x: p.x, y: p.y, t }); if (p.trail.length > 16) p.trail.shift();
 }
+// hands: AI.hands から選ばれた手（.pts に21点、.shape に 'fist'/'open'/'none'）
 function assignHands(hands, t) {
-  const tips = hands.map(h => ({ x: clamp(h[8].x, 0, W), y: clamp(h[8].y, 0, H) }));   // 8番 = 人さし指の先
+  const tips = hands.map(h => ({ x: clamp(h.pts[8].x, 0, W), y: clamp(h.pts[8].y, 0, H) }));   // 8番 = 人さし指の先
   const used = new Set();
   for (const p of ptrs) {
     if (!p.active) continue; let bi = -1, bd = 1e9;
     tips.forEach((q, i) => { if (used.has(i)) return; const d = Math.hypot(q.x - p.x, q.y - p.y); if (d < bd) { bd = d; bi = i; } });
+    if (bi < 0 || bd >= 260) continue;
+    used.add(bi);
+    const hand = hands[bi]; p.shape = hand.shape || 'none'; p.palm = hand.pts[9];
+    if (p.shape === 'fist') { p.miss = 0; continue; }   // グーの間は、誤って斬らないように位置を更新しない
     // 止めているときはよく平均して「ぷるぷる」を消し、速く動かしたときはほぼそのまま追いかけて遅れを出さない
-    if (bi >= 0 && bd < 260) { used.add(bi); ptrMove(p, tips[bi].x, tips[bi].y, t, clamp(TUNING.ai.smoothMin + bd / TUNING.ai.smoothDist, TUNING.ai.smoothMin, TUNING.ai.smoothMax)); }
+    ptrMove(p, tips[bi].x, tips[bi].y, t, clamp(TUNING.ai.smoothMin + bd / TUNING.ai.smoothDist, TUNING.ai.smoothMin, TUNING.ai.smoothMax));
   }
-  tips.forEach((q, i) => { if (used.has(i)) return; const p = ptrs.find(pp => !pp.active); if (p) { ptrMove(p, q.x, q.y, t, 1); used.add(i); } });
+  tips.forEach((q, i) => {
+    if (used.has(i)) return; const p = ptrs.find(pp => !pp.active); if (!p) return;
+    used.add(i); const hand = hands[i]; p.shape = hand.shape || 'none'; p.palm = hand.pts[9];
+    ptrMove(p, q.x, q.y, t, 1);
+  });
 }
 function segDist(ax, ay, bx, by, px, py) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy; let t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0; t = clamp(t, 0, 1);
@@ -284,10 +295,24 @@ function segDist(ax, ay, bx, by, px, py) {
 }
 function stagePoint(e) { const r = cv.getBoundingClientRect(); return { x: clamp((e.clientX - r.left) / r.width * W, 0, W), y: clamp((e.clientY - r.top) / r.height * H, 0, H) }; }
 const mouseOK = () => runMode === 'mouse' && state !== 'menu' && state !== 'loading' && state !== 'result';
-stage.addEventListener('pointermove', e => { if (!mouseOK()) return; const p = stagePoint(e); ptrMove(ptrs[0], p.x, p.y, performance.now() / 1000, 1); });
-stage.addEventListener('pointerdown', e => { if (!mouseOK()) return; const p = stagePoint(e); ptrMove(ptrs[0], p.x, p.y, performance.now() / 1000, 1); });
+function mouseMove(e) {
+  if (!mouseOK()) return;
+  const p = stagePoint(e); ptrs[0].palm = p;
+  if (S.gesture && mouseFistDown) { ptrs[0].active = true; ptrs[0].miss = 0; return; }   // グー中は、誤って斬らないように位置を更新しない
+  ptrMove(ptrs[0], p.x, p.y, performance.now() / 1000, 1);
+}
+stage.addEventListener('pointermove', mouseMove);
+stage.addEventListener('pointerdown', mouseMove);
 stage.addEventListener('pointerleave', () => { if (runMode === 'mouse') ptrs[0].active = false; });
 stage.addEventListener('pointerup', e => { if (e.pointerType === 'touch') ptrs[0].active = false; });
+// マウスの代わり: 右クリック長おし＝グー、Shift長おし＝パー（?gesture=0 のときは、どちらも効果なし）
+let mouseFistDown = false, mouseOpenDown = false;
+stage.addEventListener('contextmenu', e => { if (S.gesture) e.preventDefault(); });
+stage.addEventListener('pointerdown', e => { if (runMode === 'mouse' && S.gesture && e.button === 2) mouseFistDown = true; });
+window.addEventListener('pointerup', e => { if (e.button === 2) mouseFistDown = false; });
+window.addEventListener('blur', () => { mouseFistDown = false; mouseOpenDown = false; });
+window.addEventListener('keydown', e => { if (runMode === 'mouse' && S.gesture && (e.code === 'ShiftLeft' || e.code === 'ShiftRight')) mouseOpenDown = true; });
+window.addEventListener('keyup', e => { if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') mouseOpenDown = false; });
 // スタッフ用: 画面の左上を1.5びょう長おしすると、メニューにもどる（タッチ画面用）
 let lpTimer = 0;
 stage.addEventListener('pointerdown', e => {
@@ -308,7 +333,8 @@ let entry = null, entryDefault = '', lastAt = 0, autoT = 0, autoMsg = '', result
 let attractT = 0, attractPage = 0, loadTipT = 0, wakeLock = null;
 let shots = [], shotT = 0, reflects = 0, shotHits = 0, cracks = [], attackHinted = false;
 let boss = null, bossAppeared = false, bossDefeated = false;
-let previousGhost = null, ghostSamples = [], ghostNextSample = 0;
+let previousGhost = null, ghostSamples = [], ghostLastSampleT = -Infinity;
+let gestureStates = [createGestureState()], gestureFlashT = 0, gestureShakeT = 0;
 const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT });
 const effectState = { get fx() { return fx; }, set fx(value) { fx = value; } };
 const { burst, ring, addText, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
@@ -462,6 +488,41 @@ function updateBossAttacks() {
   const action = updateBossShots(boss, elapsed, TUNING.boss, activeBossShots);
   if (action === 'launch') launchShot({ forceFrom: boss, windup: TUNING.boss.telegraph, radius: TUNING.boss.radius });
 }
+// ---- 手の技（グー・パー）----
+function gestureHandAt(shape) { return ptrs.find(p => p.active && p.shape === shape); }
+function updateGesture(dt) {
+  if (!S.gesture) return;
+  const g = gestureStates[0];
+  const isFist = runMode === 'mouse' ? mouseFistDown : !!gestureHandAt('fist');
+  const isOpen = runMode === 'mouse' ? mouseOpenDown : !!gestureHandAt('open');
+  updateHold(g.fist, isFist, dt, TUNING.gesture.graceMs);
+  updateHold(g.open, isOpen, dt, TUNING.gesture.graceMs);
+  updateShieldTimers(g, dt);
+  if (runMode === 'mouse') { g.shieldX = ptrs[0].palm.x; g.shieldY = ptrs[0].palm.y; }
+  else { const hand = gestureHandAt('open'); if (hand) { g.shieldX = hand.palm.x; g.shieldY = hand.palm.y; } }   // 手を見失っても、最後の位置に残る
+  if (consumeFist(g, TUNING.gesture)) triggerFistBurst();
+  if (tryActivateShield(g, TUNING.gesture)) { Snd.select(); burst(g.shieldX, g.shieldY, '#4FC3F7', 18, 240, .5); }
+}
+function triggerFistBurst() {
+  const mult = multOf(combo);   // コンボ倍率はかかるが、コンボ数は増やさない
+  for (const m of monsters) {
+    if (m.dead) continue;
+    if (!MON[m.type].bad) {
+      const pts = MON[m.type].pts * mult; score += pts; kills++;
+      burst(m.x, m.y, MON[m.type].color, 12, 260, .55); addText(m.x, m.y - 8, `+${pts}`, '#ffe66b', 24);
+    }
+    m.dead = true;
+  }
+  monsters = monsters.filter(m => !m.dead);
+  if (boss && boss.hp > 0) {
+    const result = damageBossFlat(boss, TUNING.gesture.fistBossDamage, TUNING.boss);
+    if (result.applied) applyBossDamageResult(result, `-${TUNING.gesture.fistBossDamage}`);
+  }
+  for (const s of shots) s.gone = true;   // 飛んでくる火の玉をすべて消す（はね返し扱いにしない）
+  shots = shots.filter(s => !s.gone);
+  gestureFlashT = TUNING.gesture.flashSec; gestureShakeT = TUNING.gesture.shakeSec;
+  Snd.big();
+}
 function testHits(dt = 0) {
   if (boss && boss.hp > 0) {
     for (const p of ptrs) {
@@ -470,6 +531,7 @@ function testHits(dt = 0) {
       if (speed < TUNING.boss.minSlashSpeed || segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) > TUNING.boss.radius) continue;
       const result = damageBoss(boss, speed, TUNING.boss, p === ptrs[0] ? 'p1' : 'p2');
       if (!result.applied) continue;
+      if (S.gesture) addGauge(gestureStates[0], TUNING.gesture.gaugeBossHit);
       applyBossDamageResult(result, `-${TUNING.boss.slashDamage}`);
       break;
     }
@@ -484,6 +546,9 @@ function testHits(dt = 0) {
   }
   for (const s of shots) {   // 飛んでくる火の玉を斬ったら、はじき返す
     if (s.st !== 'fly') continue;
+    if (S.gesture && gestureStates.some(g => shotInsideShield(s.x, s.y, g, TUNING.gesture.shieldRadius))) {
+      s.gone = true; burst(s.x, s.y, '#4FC3F7', 14, 220, .4); continue;   // 盾の中：はじき返しもボスダメージもなし
+    }
     let hit = false, hp = null;
     if (runMode === 'motion') { if (Motion.coverage(s.x, s.y, Math.max(22, s.r)) >= .2) hit = true; }
     else for (const p of ptrs) { if (p.active && segDist(p.ox, p.oy, p.x, p.y, s.x, s.y) <= s.r + pad * .6 + 8) { hit = true; hp = p; break; } }
@@ -504,6 +569,7 @@ function onHit(m, p) {
 function kill(m) {
   const T = MON[m.type]; m.dead = true; kills++;
   bumpCombo();
+  if (S.gesture) addGauge(gestureStates[0], TUNING.gesture.gaugeEnemy);
   if (T.fever) {
     feverT = Math.min(TUNING.feverSeconds * 1.5, feverT + TUNING.feverSeconds);
     banner('FEVER TIME!!', 'fever band', 1500, `${TUNING.feverSeconds}びょう間 とくてん2ばい`); ring(m.x, m.y, T.color, 160); Snd.star();
@@ -591,15 +657,21 @@ function resetRound() {
   timeLeft = S.time; elapsed = 0; spawnT = .6; shake = 0; flashRed = 0; hitStop = 0; lastShown = false; lastSec = 99;
   shots = []; cracks = []; shotT = TUNING.attacks.startAfter; reflects = 0; shotHits = 0; attackHinted = false;
   boss = null; bossAppeared = false; bossDefeated = false;
-  previousGhost = S.ghost ? unpackGhost(store.get('ghost', null), TUNING.ghost) : null;
-  ghostSamples = []; ghostNextSample = 0;
+  previousGhost = S.ghost ? unpackGhost(store.get('ghost_' + S.time, null)) : null;
+  ghostSamples = []; ghostLastSampleT = -Infinity;
+  gestureStates = [createGestureState()]; gestureFlashT = 0; gestureShakeT = 0;
+}
+function currentGhostPoints() {
+  return ptrs.filter(p => p.active).map(p => normalizeGhostPoint(p.x, p.y, W, H));
+}
+function pushGhostSample() {
+  ghostSamples.push(createGhostSample(elapsed, currentGhostPoints(), score));
 }
 function recordGhostSamples() {
   if (!S.ghost) return;
-  while (ghostNextSample <= elapsed && ghostNextSample <= TUNING.ghost.maxDuration) {
-    ghostSamples.push(createGhostSample(ghostNextSample, ptrs, score, TUNING.ghost.interval));
-    ghostNextSample = Number((ghostNextSample + TUNING.ghost.interval).toFixed(4));
-  }
+  if (elapsed - ghostLastSampleT < TUNING.ghost.interval) return;
+  ghostLastSampleT = elapsed;
+  pushGhostSample();
 }
 // ---- READY? → 3 → 2 → 1 → START! ----
 function startCountdown() { resetRound(); cdT = 0; cdStage = -1; setState('countdown'); }
@@ -626,13 +698,17 @@ function updatePlay(dt) {
   for (const m of monsters) updateMonster(m, dt);
   updateAttacks(dt);
   testHits(dt);
+  updateGesture(dt);
   monsters = monsters.filter(m => !m.dead);
   recordGhostSamples();
   if (!lastShown && timeLeft <= 10 && S.time > 12) { lastShown = true; banner('ラスト10びょう！', 'last band', 1400); Snd.alarm(); }
   const sec = Math.ceil(timeLeft); if (sec !== lastSec) { lastSec = sec; if (sec <= 5 && sec > 0) Snd.tick(); }
   if (timeLeft <= 0) { timeLeft = 0; finishRound(); }
 }
-function finishRound() { setState('finish'); finT = 0; finWiping = false; Music.stop(); banner('FINISH!', 'finish', 1600); Snd.whistle(); }
+function finishRound() {
+  if (S.ghost) pushGhostSample();   // ラウンド終了時点の記録を最後に1つ足す
+  setState('finish'); finT = 0; finWiping = false; Music.stop(); banner('FINISH!', 'finish', 1600); Snd.whistle();
+}
 function updateFinish(dt) {
   finT += dt;
   if (finT >= 1.6 && !finWiping) { finWiping = true; wipeTo(() => { if (state === 'finish') endRound(); }); }
@@ -658,7 +734,9 @@ function saveScores(list) {   // 今日の記録はぜんぶ、ほかの日は�
 // ---- けっか画面（順番に出していく）----
 function endRound() {
   Music.stop(); feverT = 0;
-  if (S.ghost && ghostSamples.length) store.set('ghost', packGhost(ghostSamples, TUNING.ghost));
+  if (S.ghost && ghostSamples.length && hasAnyHand(ghostSamples)) {
+    try { store.set('ghost_' + S.time, packGhost(ghostSamples)); } catch (e) { /* 保存できなくても遊べるようにする */ }
+  }
   const rk = rankOf(score), em = $('#emblem'); $('#rankLetter').textContent = rk; em.dataset.rank = rk;
   $('#resScore').textContent = '0'; $('#resCombo').textContent = String(maxCombo); $('#resKills').textContent = String(kills); $('#resBombs').textContent = String(bombs);
   $('#resReflect').textContent = String(reflects); $('#st4').hidden = !S.attack; $('#rStats').classList.toggle('four', S.attack);
@@ -798,6 +876,7 @@ bindRadios('booth', 'booth', v => v === '1', v => v ? '1' : '0'); bindRadios('vi
 bindRadios('attack', 'attack', v => v === '1', v => v ? '1' : '0');
 bindRadios('boss', 'boss', v => v === '1', v => v ? '1' : '0');
 bindRadios('ghost', 'ghost', v => v === '1', v => v ? '1' : '0', 'ghostEnabled');
+bindRadios('gesture', 'gesture', v => v === '1', v => v ? '1' : '0');
 $('#embedNote').hidden = !embedded;
 function goFull(on) {
   try {
@@ -829,8 +908,9 @@ let resetArm = 0;
 $('#resetToday').addEventListener('click', () => {
   const b = $('#resetToday');
   if (Date.now() - resetArm > 4000) { resetArm = Date.now(); b.textContent = 'もう一度おすと消えます'; setTimeout(() => { if (Date.now() - resetArm >= 3900) b.textContent = '今日の記録をリセット'; }, 4000); return; }
-  resetArm = 0; const k = dayKey(Date.now()); store.set('scores', allScores().filter(e => dayKey(e.at) !== k)); store.set('ghost', null);
-  previousGhost = null; ghostSamples = []; ghostNextSample = 0;
+  resetArm = 0; const k = dayKey(Date.now()); store.set('scores', allScores().filter(e => dayKey(e.at) !== k));
+  store.set('ghost_30', null); store.set('ghost_60', null); store.set('scoresTwo', null);
+  previousGhost = null; ghostSamples = []; ghostLastSampleT = -Infinity;
   b.textContent = '今日の記録をリセット'; lastAt = 0; renderBoard(); toast('今日の記録をリセットしました', 3000);
 });
 document.querySelectorAll('.card, .chip, .gbtn').forEach(el => el.addEventListener('pointerenter', () => { if (Snd.ctx) Snd.move(); }));
@@ -981,21 +1061,24 @@ function drawMonster(m, t, alpha = 1) {
 }
 function drawGhostRace() {
   if (!S.ghost || !previousGhost || !previousGhost.length) return;
+  if (elapsed > previousGhost[previousGhost.length - 1].t) return;   // 記録の最後を過ぎたら残像を消す
   const sample = sampleGhost(previousGhost, elapsed);
   if (!sample) return;
+  const radius = 18;
   ctx.save();
-  ctx.globalAlpha = TUNING.ghost.opacity;
+  ctx.globalAlpha = TUNING.ghost.alpha;
   ctx.strokeStyle = TUNING.ghost.color;
   ctx.fillStyle = TUNING.ghost.color;
   ctx.lineWidth = 3;
   ctx.shadowColor = TUNING.ghost.color;
-  ctx.shadowBlur = TUNING.ghost.radius;
+  ctx.shadowBlur = radius;
   for (const point of sample.p) {
+    const x = point.x * W, y = point.y * H;
     ctx.beginPath();
-    ctx.arc(point.x, point.y, TUNING.ghost.radius, 0, TAU);
+    ctx.arc(x, y, radius, 0, TAU);
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(point.x, point.y, TUNING.ghost.radius / 4, 0, TAU);
+    ctx.arc(x, y, radius / 4, 0, TAU);
     ctx.fill();
   }
   ctx.restore();
@@ -1148,6 +1231,7 @@ function drawBackground(t) {
   ctx.drawImage(vigLayer, 0, 0);
   if (feverT > 0) { ctx.fillStyle = `rgba(255,200,61,${.1 + .06 * Math.sin(t * 6)})`; ctx.fillRect(0, 0, W, H); ctx.strokeStyle = `hsl(${(t * 240) % 360},100%,62%)`; ctx.lineWidth = 9; ctx.strokeRect(4, 4, W - 8, H - 8); }
   if (flashRed > 0) { ctx.fillStyle = `rgba(255,40,60,${flashRed * .4})`; ctx.fillRect(0, 0, W, H); }
+  if (gestureFlashT > 0) { ctx.fillStyle = `rgba(255,255,255,${(gestureFlashT / TUNING.gesture.flashSec) * .55})`; ctx.fillRect(0, 0, W, H); }
 }
 // メニューや待機画面のうしろで、ゆっくりただよう飾りのモンスター
 function initDeco() {
@@ -1156,9 +1240,54 @@ function initDeco() {
 }
 function updateDeco(dt) { for (const m of deco) { m.age += dt; m.x += m.vx * dt + Math.sin(m.age * .7 + m.ph) * 20 * dt; m.y += m.vy * dt + Math.cos(m.age * .6 + m.ph) * 16 * dt; if (m.x < -60) m.x = W + 60; if (m.x > W + 60) m.x = -60; if (m.y < 40 || m.y > H - 40) m.vy *= -1; } }
 
+function drawShields() {
+  if (!S.gesture) return;
+  for (const g of gestureStates) {
+    if (!g.shieldActive) continue;
+    const k = clamp(g.shieldTimeLeft / TUNING.gesture.shieldDuration, 0, 1);
+    ctx.save(); ctx.globalAlpha = .55 + .2 * Math.sin(performance.now() / 110);
+    ctx.strokeStyle = '#4FC3F7'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(g.shieldX, g.shieldY, TUNING.gesture.shieldRadius, 0, TAU); ctx.stroke();
+    ctx.globalAlpha *= .25; ctx.fillStyle = '#4FC3F7'; ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(g.shieldX, g.shieldY, TUNING.gesture.shieldRadius + 6, -Math.PI / 2, -Math.PI / 2 + TAU * k); ctx.stroke();
+    ctx.restore();
+  }
+}
+function drawGesturePlayerHud(g, cx, y) {
+  const barW = 130, barH = 14, x = cx - barW / 2;
+  ctx.save();
+  ctx.fillStyle = 'rgba(10,14,34,.75)'; rrPath(x, y - barH / 2, barW, barH, 7); ctx.fill();
+  const full = g.gauge >= 100;
+  ctx.fillStyle = full ? '#fff35e' : '#5dc8ff'; rrPath(x, y - barH / 2, barW * clamp(g.gauge / 100, 0, 1), barH, 7); ctx.fill();
+  if (full) { ctx.globalAlpha = .55 + .45 * Math.sin(performance.now() / 130); ctx.strokeStyle = '#fff35e'; ctx.lineWidth = 3; rrPath(x - 2, y - barH / 2 - 2, barW + 4, barH + 4, 8); ctx.stroke(); ctx.globalAlpha = 1; }
+  txt('グー', x - 10, y + 5, 13, '#fff', 'right', 800, FB, { w: 4, c: 'rgba(6,8,24,.9)' });
+
+  const sx = cx + barW / 2 + 34, sr = 15;
+  ctx.beginPath(); ctx.arc(sx, y, sr, 0, TAU);
+  if (g.shieldActive) {
+    ctx.fillStyle = 'rgba(79,195,247,.85)'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx, y, sr, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(g.shieldTimeLeft / TUNING.gesture.shieldDuration, 0, 1)); ctx.lineTo(sx, y); ctx.stroke();
+  } else if (g.shieldCooldownLeft > 0) {
+    ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(sx, y); ctx.arc(sx, y, sr, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - clamp(g.shieldCooldownLeft / TUNING.gesture.shieldCooldown, 0, 1))); ctx.closePath();
+    ctx.fillStyle = 'rgba(79,195,247,.5)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.4)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx, y, sr, 0, TAU); ctx.stroke();
+  } else {
+    ctx.strokeStyle = '#4FC3F7'; ctx.lineWidth = 3; ctx.stroke();
+  }
+  txt('パー', sx + 22, y + 5, 13, '#fff', 'left', 800, FB, { w: 4, c: 'rgba(6,8,24,.9)' });
+  ctx.restore();
+}
+function drawGestureHud() {
+  if (!S.gesture || !(state === 'play' || state === 'countdown' || state === 'paused')) return;
+  drawGesturePlayerHud(gestureStates[0], W / 2, H - 24);
+}
 function render(t) {
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  let sx = 0, sy = 0; if (shake > 0 && !reduceMotion) { sx = rnd(-1, 1) * shake * 9; sy = rnd(-1, 1) * shake * 9; }
+  let sx = 0, sy = 0;
+  if (shake > 0 && !reduceMotion) { sx += rnd(-1, 1) * shake * 9; sy += rnd(-1, 1) * shake * 9; }
+  if (gestureShakeT > 0 && !reduceMotion) { const k = gestureShakeT / TUNING.gesture.shakeSec; sx += rnd(-1, 1) * k * TUNING.gesture.shakePx; sy += rnd(-1, 1) * k * TUNING.gesture.shakePx; }
   ctx.save(); ctx.translate(sx, sy);
   drawBackground(t);
   if (state === 'menu' || state === 'loading') { for (const m of deco) drawMonster(m, t, .45); }
@@ -1168,11 +1297,13 @@ function render(t) {
     if (runMode === 'ai' && Cam.ready && (S.eye || state === 'ready' || state === 'countdown')) drawHands();
     if (state !== 'result') drawGhostRace();
     if (state !== 'result') { const fa = state === 'finish' ? clamp(1 - finT / 1.2, 0, 1) : 1; for (const m of monsters) drawMonster(m, t, fa); drawBoss(); for (const s of shots) drawShot(s, t, fa); }
+    if (state !== 'result') drawShields();
     drawFx();
     if (state !== 'result' && state !== 'finish') drawTrails(t);
   }
   ctx.restore();
   if (cracks.length) drawCracks();   // ヒビは画面のガラスに入るので、ゆれの外で描く
+  drawGestureHud();   // ゲージ・盾のアイコンは、ゆれの外で描く
 }
 
 // ============================================================
@@ -1183,10 +1314,11 @@ function step(dt, t) {
   shown = lerp(shown, score, 1 - Math.pow(.0005, dt));
   gridPhase = (gridPhase + dt * (state === 'play' ? 1.6 : .35)) % 1;
   if (shake > 0) shake = Math.max(0, shake - dt * 2.5); if (flashRed > 0) flashRed = Math.max(0, flashRed - dt * 2.2);
+  if (gestureFlashT > 0) gestureFlashT = Math.max(0, gestureFlashT - dt); if (gestureShakeT > 0) gestureShakeT = Math.max(0, gestureShakeT - dt);
   if (state !== 'paused') { updateFx(dt); if (cracks.length) { for (const c of cracks) c.life -= dt; cracks = cracks.filter(c => c.life > 0); } }
   const live = state === 'ready' || state === 'countdown' || state === 'play';
   if (live && Cam.ready) {
-    if (runMode === 'ai') { for (const p of ptrs) p.miss += dt; aiStep(t, dt); for (const p of ptrs) if (p.active && p.miss > .25) p.active = false; }
+    if (runMode === 'ai') { for (const p of ptrs) p.miss += dt; aiStep(t, dt); for (const p of ptrs) if (p.active && p.miss > .25) { p.active = false; p.shape = 'none'; } }
     else if (runMode === 'motion') Motion.update(Cam.video, Cam.cv);
   }
   if (runMode === 'mouse' && live) { ptrs[0].miss += dt; for (const p of ptrs) if (p.active && p.miss > 3) p.active = false; }
@@ -1209,5 +1341,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti, get gestureStates() { return gestureStates; }, triggerFistBurst, updateGesture };
 if (qs.get('autostart') === '1') startFlow();

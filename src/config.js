@@ -47,13 +47,29 @@ const TUNING = {
     color: '#5dff9a',
   },
   ghost: {
-    interval: 0.1,
-    maxDuration: 180,
-    maxSamples: 1801,
-    maxBytes: 48 * 1024,
-    radius: 18,
-    opacity: 0.42,
-    color: '#65f5ff',
+    interval: 0.1,     // 前の記録から何びょう以上たつたびに記録するか
+    alpha: 0.35,       // 残像のうすさ
+    color: '#4FC3F7',
+  },
+  gesture: {
+    gaugeEnemy: 10,       // 通常の敵を1体たおすごとに増えるゲージ（%）
+    gaugeBossHit: 2,      // ボスへ斬りダメージが入るごとに増えるゲージ（%）
+    fistFingers: 3,       // グーと判定する、曲がっている指の本数
+    fistHold: 0.5,        // ゲージ100%でグーの形をこの秒数続けると発動
+    fistBossDamage: 30,   // グー発動時のボスへのダメージ
+    openHold: 0.3,        // パーの形をこの秒数続けると、盾が発動
+    shieldDuration: 2,    // 盾が出ている時間（びょう）
+    shieldCooldown: 8,    // 盾の再使用までの時間（びょう）。発動の瞬間から数える
+    shieldRadius: 120,    // 盾の半径
+    graceMs: 120,         // 形が崩れても、この時間以内なら保持が続いているとみなす
+    flashSec: 0.25,       // グー発動時、画面が光る時間
+    shakeSec: 0.4,        // グー発動時、画面がゆれる時間
+    shakePx: 12,          // グー発動時の、画面のゆれの大きさ
+  },
+  two: {
+    duration: 60,         // 2人プレイのプレイ時間（びょう）に固定
+    maxHands: 4,          // 2人プレイのときにAIへ渡す手の数
+    centerDeadZone: 0.04, // 画面の中央、左右どちらにも割り当てない範囲（幅に対する割合）
   },
   difficulty: {            // spawn:出る間かく(小さいほど多い) speed:速さ bomb:ばくだんの出やすさ pad:当たりの広さ(px)
     easy:   { spawn: 1.00, speed: 0.85, bomb: 0.05, pad: 24 },
