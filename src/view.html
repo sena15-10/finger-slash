@@ -1,0 +1,169 @@
+<div id="stage">
+  <canvas id="game" width="960" height="540" aria-label="ゲーム画面"></canvas>
+
+  <!-- プレイ中の表示 -->
+  <div id="hud" aria-hidden="true">
+    <div class="h-score"><span class="h-lbl">SCORE</span><span id="hScore">0</span></div>
+    <div class="h-time" id="hTimeBox"><svg viewBox="0 0 100 100"><circle class="trk" cx="50" cy="50" r="42"/><circle id="hRing" class="ring" cx="50" cy="50" r="42"/></svg><span class="h-tl">TIME</span><span id="hTime">30</span></div>
+    <div class="h-combo" id="hCombo"><span id="hComboN">0</span><span class="h-cl">COMBO</span><span class="h-mult" id="hMult">×1</span><i class="h-cbar"><b id="hCbar"></b></i></div>
+    <div class="h-fever" id="hFever"><span>FEVER</span><i><b id="hFbar"></b></i></div>
+    <div class="h-mode" id="hMode"></div>
+    <div class="h-hint" id="hHint"></div>
+  </div>
+  <div id="fx" aria-hidden="true"></div>
+
+  <!-- メニュー -->
+  <section id="menu" class="screen on" aria-label="メニュー">
+    <div class="m-left">
+      <h1 class="logo" aria-label="Finger Slash"><span class="l1" aria-hidden="true">FINGER</span><span class="l2" aria-hidden="true">SLASH</span></h1>
+      <p class="m-sub">カメラ × AI アクション　<b>人さし指が けん になる！</b></p>
+      <div class="ribbon">MODE SELECT <small>モードをえらぶ</small></div>
+      <div class="cards" role="radiogroup" aria-label="モード">
+        <label class="card"><input type="radio" name="mode" value="ai"><span class="in"><span class="tag">SELECT</span>
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M15 27V13a3 3 0 0 1 6 0v10M21 22V9a3 3 0 0 1 6 0v13M27 22V11a3 3 0 0 1 6 0v12M33 23v-5a3 3 0 0 1 6 0v11c0 8-6 14-14 14h-2c-6 0-9-3-12-8l-5-8a3 3 0 0 1 5-3l4 5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <b>AIハンド</b><small>おすすめ</small></span></label>
+        <label class="card"><input type="radio" name="mode" value="motion"><span class="in"><span class="tag">SELECT</span>
+          <svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="14" cy="24" r="5" fill="currentColor"/><path d="M24 15a12 12 0 0 1 0 18M30 10a19 19 0 0 1 0 28M36 5a26 26 0 0 1 0 38" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+          <b>モーション</b><small>AIなし・かんたん</small></span></label>
+        <label class="card"><input type="radio" name="mode" value="mouse"><span class="in"><span class="tag">SELECT</span>
+          <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="13" y="5" width="22" height="38" rx="11" fill="none" stroke="currentColor" stroke-width="3"/><path d="M24 5v12M13 18h22" fill="none" stroke="currentColor" stroke-width="3"/></svg>
+          <b>マウス</b><small>カメラなし</small></span></label>
+      </div>
+      <div class="opt"><span class="olbl">LEVEL</span>
+        <div class="chips" role="radiogroup" aria-label="むずかしさ">
+          <label class="chip"><input type="radio" name="diff" value="easy"><span><i>★</i>やさしい</span></label>
+          <label class="chip"><input type="radio" name="diff" value="normal"><span><i>★★</i>ふつう</span></label>
+          <label class="chip"><input type="radio" name="diff" value="hard"><span><i>★★★</i>むずかしい</span></label>
+        </div></div>
+      <div class="opt"><span class="olbl">TIME</span>
+        <div class="chips" role="radiogroup" aria-label="じかん">
+          <label class="chip"><input type="radio" name="time" value="20"><span><em>20</em>びょう</span></label>
+          <label class="chip"><input type="radio" name="time" value="30"><span><em>30</em>びょう</span></label>
+          <label class="chip"><input type="radio" name="time" value="45"><span><em>45</em>びょう</span></label>
+        </div></div>
+      <div class="m-start">
+        <button id="play" class="gbtn gold big" type="button"><span>GAME START ▶</span></button>
+        <p class="privacy">カメラの映像は、この端末の中だけで使います。録画も送信もしません。</p>
+      </div>
+    </div>
+    <p id="embedNote" class="note" hidden>プレビュー画面ではカメラが使えません。公開したURLを新しいタブで開いてください。</p>
+    <div class="m-right gp">
+      <div><span class="ribbon small" id="boardTitle">TODAY'S BEST</span></div>
+      <ol class="board" id="board"></ol>
+      <div class="staff">
+        <div><span class="ribbon small dark">STAFF <small>スタッフ用</small></span></div>
+        <div class="srow"><span class="olbl">使い方</span>
+          <div class="chips sm" role="radiogroup" aria-label="使い方">
+            <label class="chip"><input type="radio" name="booth" value="1"><span>ブース展示</span></label>
+            <label class="chip"><input type="radio" name="booth" value="0"><span>ふつう</span></label>
+          </div></div>
+        <div class="srow"><span class="olbl">えいぞう</span>
+          <div class="chips sm" role="radiogroup" aria-label="カメラ映像の表示">
+            <label class="chip"><input type="radio" name="view" value="show"><span>そのまま</span></label>
+            <label class="chip"><input type="radio" name="view" value="blur"><span>ぼかし</span></label>
+            <label class="chip"><input type="radio" name="view" value="hide"><span>かくす</span></label>
+          </div></div>
+        <div class="srow"><span class="olbl">てきの攻撃</span>
+          <div class="chips sm" role="radiogroup" aria-label="てきの攻撃（火の玉）">
+            <label class="chip"><input type="radio" name="attack" value="1"><span>あり（火の玉）</span></label>
+            <label class="chip"><input type="radio" name="attack" value="0"><span>なし</span></label>
+          </div></div>
+        <div class="staffrow"><span id="staffCount">今日のプレイ数：0回</span><button id="resetToday" class="mini" type="button">今日の記録をリセット</button></div>
+        <p class="keys">キー操作　S メニュー　F 全画面　M 音　N 次の人</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 読みこみ中 -->
+  <section id="loading" class="screen" aria-live="polite">
+    <div class="center gp ld">
+      <p class="ld-t">NOW LOADING</p>
+      <p id="loadMsg">じゅんび中…</p>
+      <div class="pbar" id="loadMeter"><b id="loadBar"></b></div>
+      <p id="loadSub"></p>
+      <p class="tip" id="loadTip"></p>
+      <div class="btns">
+        <button id="skipAI" class="gbtn dark sm" type="button"><span>AIを待たずにモーションで遊ぶ</span></button>
+        <button id="cancelLoad" class="gbtn dark sm" type="button"><span>もどる</span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 待機画面（アトラクト） -->
+  <section id="ready" class="screen" aria-live="polite">
+    <div class="a-logo" aria-hidden="true"><span class="logo one"><span class="l1">FINGER</span> <span class="l2">SLASH</span></span></div>
+    <p class="a-tag">人さし指が けん になる！ カメラ × AI アクション</p>
+    <p class="a-count" id="todayCount">本日の挑戦者 <b>0</b>人</p>
+    <div class="a-info gp" id="standbyRank">
+      <div class="a-pages">
+        <div class="a-page on"><div><span class="ribbon small">TODAY'S BEST 10</span></div><ol class="board ten" id="board2"></ol></div>
+        <div class="a-page"><div><span class="ribbon small">HOW TO PLAY</span></div>
+          <ol class="how">
+            <li><span>手をカメラに<b>かざす</b>と、ゲームスタート</span></li>
+            <li><span><b>人さし指</b>でモンスターにさわって、たおそう</span></li>
+            <li><span><em>ばくだんはさわらない！</em> ほしをとると<b>FEVER</b></span></li>
+            <li id="howAtk"><span><em>火の玉</em>は、大きくなる前に<b>斬ってはじき返せ！</b></span></li>
+          </ol></div>
+        <div class="a-page"><div><span class="ribbon small violet">MONSTERS</span></div><ul class="dex big" id="dex2"></ul></div>
+      </div>
+      <div class="a-dots" id="aDots"><i class="on"></i><i></i><i></i></div>
+    </div>
+    <div class="a-cta gp" id="cta">
+      <div class="hold"><svg class="r" viewBox="0 0 100 100" aria-hidden="true"><circle class="trk" cx="50" cy="50" r="42"/><circle id="holdRing" class="ring" cx="50" cy="50" r="42"/></svg>
+        <svg class="ico" viewBox="0 0 48 48" aria-hidden="true"><path d="M15 27V13a3 3 0 0 1 6 0v10M21 22V9a3 3 0 0 1 6 0v13M27 22V11a3 3 0 0 1 6 0v12M33 23v-5a3 3 0 0 1 6 0v11c0 8-6 14-14 14h-2c-6 0-9-3-12-8l-5-8a3 3 0 0 1 5-3l4 5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="cta-txt"><p class="next">NEXT PLAYER!</p><p id="readyText"></p><p><button id="goNow" class="mini" type="button">いますぐスタート</button></p></div>
+    </div>
+  </section>
+
+  <!-- 一時停止 -->
+  <section id="pause" class="screen" aria-label="一時停止">
+    <div class="center gp ps">
+      <p class="ps-t">PAUSE</p>
+      <div class="btns">
+        <button id="resume" class="gbtn" type="button"><span>つづける</span></button>
+        <button id="quit" class="gbtn dark" type="button"><span>やめる</span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- リザルト -->
+  <section id="result" class="screen" aria-label="けっか">
+    <div class="r-rib"><span class="ribbon">RESULT <small>けっか</small></span></div>
+    <div class="r-rank">
+      <div class="emblem" id="emblem" data-rank="A"><span class="e-lbl">RANK</span><span id="rankLetter">A</span></div>
+      <p class="secret rv" id="secret"></p>
+    </div>
+    <div class="r-main gp rv" id="rMain">
+      <p class="r-lbl">SCORE</p>
+      <p class="r-score" id="resScore">0</p>
+      <dl class="r-stats" id="rStats">
+        <div class="st rv" id="st1"><dt>たおした数</dt><dd id="resKills">0</dd></div>
+        <div class="st rv" id="st2"><dt>さいだいコンボ</dt><dd id="resCombo">0</dd></div>
+        <div class="st rv" id="st3"><dt>ばくだん</dt><dd id="resBombs">0</dd></div>
+        <div class="st rv" id="st4" hidden><dt>はじいた火の玉</dt><dd id="resReflect">0</dd></div>
+      </dl>
+      <p class="todayrank rv" id="todayRank"></p>
+      <p class="newrec" id="newRec">本日 1位！</p>
+    </div>
+    <div class="r-foot rv" id="rFoot">
+      <label class="name">なまえ<input id="nameInput" maxlength="8" placeholder="ニックネーム" autocomplete="off"></label>
+      <p class="hint">本名は入れないでね（この端末にだけ記録）</p>
+      <div class="r-btns">
+        <button id="again" class="gbtn" type="button"><span>つぎの人へ</span></button>
+        <button id="toMenu" class="gbtn dark" type="button"><span>メニューへ</span></button>
+      </div>
+    </div>
+    <div class="autonext rv" id="autoWrap"><span id="autoNext"></span><i><b id="autoBar"></b></i></div>
+  </section>
+
+  <div id="bar">
+    <button id="bSound" class="mini" type="button" aria-pressed="true">おと</button>
+    <button id="bEye" class="mini" type="button" aria-pressed="false">AIの目</button>
+    <button id="bFull" class="mini" type="button">全画面</button>
+    <button id="bPause" class="mini" type="button">ポーズ</button>
+  </div>
+  <div id="wipe" aria-hidden="true"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+</div>
+<video id="cam" playsinline muted></video>
+<noscript>このゲームはJavaScriptを有効にすると遊べます。</noscript>
