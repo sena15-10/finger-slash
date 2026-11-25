@@ -276,7 +276,23 @@ function predictHands(t, frameSec) {
   }
   AI.prev = next;
 }
-function switchToMotion() { runMode = 'motion'; Motion.reset(); AI.hands = []; AI.valid = 0; for (const p of ptrs) p.active = false; }
+function switchToMotion() {
+  runMode = 'motion'; Motion.reset(); AI.hands = []; AI.valid = 0; for (const p of ptrs) p.active = false;
+  if (S.two) dropTwoPlayer();
+}
+// 2人プレイ中にAIが止まったとき。モーションでは左右の人を見分けられないので、2人プレイを続けない
+//  プレイ中: そこまでの点数で2人の結果を出す（途中で終わったので、ランキングには残さない）
+//  カウントダウン中: 1人用で数えなおす ／ 待機画面: そのまま1人にする
+// 保存した「2人」の設定は変えない（メニューに戻ると元にもどる）
+function dropTwoPlayer() {
+  const wasPlaying = state === 'play';
+  if (wasPlaying) endRound({ save: false });
+  twoSuspended = true; S.two = false; syncTwoUI({ persist: false });
+  if (state === 'countdown') startCountdown();
+  toast(wasPlaying
+    ? 'AIが止まったので、2人プレイをここで終わりにしました（この回の記録は残しません）。次からはモーションで1人ずつ遊べます'
+    : 'AIが止まったので、モーションモードの1人プレイに切りかえました。メニューに戻ると「2人」の設定にもどります', 9000);
+}
 
 // ============================================================
 //  ゆび（ポインタ）… AIの手 / マウス / タッチ のどれでも同じように扱う
@@ -806,10 +822,11 @@ function allTwoScores() { return validTwoEntries(store.get('scoresTwo', [])); }
 function todayTwoScores() { const k = dayKey(Date.now()); return allTwoScores().filter(e => dayKey(e.ts) === k).sort((a, b) => b.total - a.total); }
 function saveTwoScores(list) { store.set('scoresTwo', pruneTwoScores(list, dayKey(Date.now()), dayKey)); }
 // ---- けっか画面（順番に出していく）----
-function endRound() {
+// save: false のときは、ランキングに残さない（2人プレイがAIの停止で途中で終わったとき）
+function endRound({ save = true } = {}) {
   Music.stop(); feverT = 0;
   $('#result').classList.toggle('two', S.two);
-  if (S.two) { endRoundTwo(); return; }
+  if (S.two) { endRoundTwo({ save }); return; }
   if (ghostOn() && ghostSamples.length && hasAnyHand(ghostSamples)) {
     try { store.set('ghost_' + S.time, packGhost(ghostSamples)); } catch (e) { /* 保存できなくても遊べるようにする */ }
   }
@@ -853,7 +870,7 @@ function endRound() {
   at(2900, () => { $('#rFoot').classList.add('show'); $('#secret').classList.add('show'); $('#autoWrap').classList.add('show'); resultArmed = true; });
 }
 // 2人プレイのけっか: 「左の人 ◯点」「右の人 ◯点」を並べ、多いほうに「勝ち！」（同点は「ひきわけ！」）。名前入力は出さない
-function endRoundTwo() {
+function endRoundTwo({ save = true } = {}) {
   const l = score, r = score2, verdict = twoPlayerVerdict(l, r);
   const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
   $('#bossResult').hidden = !bossRemaining;
@@ -864,7 +881,7 @@ function endRoundTwo() {
   $('#twoDraw').textContent = verdict === 'draw' ? 'ひきわけ！' : '';
   $('#tpL').classList.toggle('win', verdict === 'l'); $('#tpR').classList.toggle('win', verdict === 'r');
   const e = makeTwoEntry(l, r, Date.now()); entry = null; lastAt = e.ts;
-  const list = allTwoScores(); list.push(e); saveTwoScores(list);
+  if (save) { const list = allTwoScores(); list.push(e); saveTwoScores(list); }
   $('#again').querySelector('span').textContent = S.booth ? 'つぎの人へ' : 'もういっかい';
   for (const el of document.querySelectorAll('#result .rv, #emblem, #newRec, #twoResult .tp-win, #twoDraw')) el.classList.remove('show');
   autoT = TUNING.boothResultSeconds; autoMsg = ''; resultArmed = false; $('#autoNext').textContent = ''; $('#autoBar').style.width = '100%';
