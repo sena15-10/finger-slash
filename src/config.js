@@ -26,6 +26,21 @@ const TUNING = {
     reflectPts: 30,        // はじき返したときの点数（コンボ倍率がかかる）
     maxAtOnce: 2,          // 同時に飛んでくる火の玉の上限
   },
+  boss: {
+    appearAt: 5,
+    hp: 150,
+    damage: 10,
+    hitCooldown: 0.12,
+    minSpeed: 220,
+    bonus: 500,
+    radius: 96,
+    moveSpeed: 55,
+    centerY: 260,
+    maxMonsters: 6,
+    barHeight: 10,
+    barOffset: 18,
+    color: '#5dff9a',
+  },
   difficulty: {            // spawn:出る間かく(小さいほど多い) speed:速さ bomb:ばくだんの出やすさ pad:当たりの広さ(px)
     easy:   { spawn: 1.00, speed: 0.85, bomb: 0.05, pad: 24 },
     normal: { spawn: 0.80, speed: 1.00, bomb: 0.09, pad: 15 },

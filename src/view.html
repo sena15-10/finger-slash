@@ -68,6 +68,11 @@
             <label class="chip"><input type="radio" name="attack" value="1"><span>あり（火の玉）</span></label>
             <label class="chip"><input type="radio" name="attack" value="0"><span>なし</span></label>
           </div></div>
+        <div class="srow"><span class="olbl">ボス</span>
+          <div class="chips sm" role="radiogroup" aria-label="ボス戦">
+            <label class="chip"><input type="radio" name="boss" value="1"><span>あり</span></label>
+            <label class="chip"><input type="radio" name="boss" value="0"><span>なし</span></label>
+          </div></div>
         <div class="staffrow"><span id="staffCount">今日のプレイ数：0回</span><button id="resetToday" class="mini" type="button">今日の記録をリセット</button></div>
         <p class="keys">キー操作　S メニュー　F 全画面　M 音　N 次の人</p>
       </div>
@@ -136,6 +141,7 @@
     <div class="r-main gp rv" id="rMain">
       <p class="r-lbl">SCORE</p>
       <p class="r-score" id="resScore">0</p>
+      <p class="boss-result" id="bossResult" hidden></p>
       <dl class="r-stats" id="rStats">
         <div class="st rv" id="st1"><dt>たおした数</dt><dd id="resKills">0</dd></div>
         <div class="st rv" id="st2"><dt>さいだいコンボ</dt><dd id="resCombo">0</dd></div>

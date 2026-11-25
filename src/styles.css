@@ -129,6 +129,8 @@ h1,h2,p,ol,ul,dl,dd{margin:0;padding:0}
 .staff{margin-top:auto;display:grid;gap:6px}
 .srow{display:grid;grid-template-columns:64px 1fr;align-items:center;gap:6px}
 .srow .olbl{font:800 12px/1 var(--fb);color:var(--muted);letter-spacing:0}
+.boss-result{margin:0 0 8px;color:var(--lime);font:800 18px/1.2 var(--fb)}
+.boss-result[hidden]{display:none}
 .staffrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font:800 12.5px/1 var(--fb)}
 .keys{font:700 11px/1.4 var(--fb);color:var(--muted)}
 

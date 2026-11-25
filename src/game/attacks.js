@@ -1,6 +1,7 @@
-export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText }) {
+export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false }) {
 function updateAttacks(dt) {
   if (!S.attack) return;
+  if (isBossActive()) { state.shots = []; return; }
   const A = TUNING.attacks, fly = A.flyTime[S.diff] || 1.8;
   state.shotT -= dt;
   if (state.shotT <= 0) {

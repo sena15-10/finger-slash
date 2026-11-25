@@ -6,6 +6,7 @@ import { createAudio } from '../audio/audio.js';
 import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
 import { createAttacks } from './attacks.js';
+import { createBoss, damageBoss, shouldSpawnBoss, updateBoss } from './boss.js';
 
 
 // ============================================================
@@ -15,7 +16,7 @@ import { createAttacks } from './attacks.js';
 //  ・AIが使えない時の代わり: 「モーション」（前の映像とのちがいを見るだけ）
 //  ・カメラが使えない時の代わり: 「マウス / タッチ」
 //  ・画像に差しかえたいとき: assets フォルダに、
-//      slime.png ghost.png bat.png golem.png star.png bomb.png（背景が透明なPNG）を入れる
+//      slime.png ghost.png bat.png golem.png star.png bomb.png boss.png（背景が透明なPNG）を入れる
 //
 //  ★ 改造したい人へ: src/config.js の TUNING の数字を変えると、ゲームの感じが変わります。
 // ============================================================
@@ -51,6 +52,7 @@ const S = {
   booth: qs.has('booth') ? qs.get('booth') !== '0' : store.get('booth', true) !== false,
   view: oneOf(qs.get('view'), ['show', 'blur', 'hide'], oneOf(store.get('view', 'show'), ['show', 'blur', 'hide'], 'show')),
   attack: qs.has('attack') ? qs.get('attack') !== '0' : store.get('attack', true) !== false,
+  boss: qs.has('boss') ? qs.get('boss') !== '0' : store.get('boss', true) !== false,
 };
 const diffCfg = () => TUNING.difficulty[S.diff];
 
@@ -303,6 +305,7 @@ let cdT = 0, cdStage = -1, finT = 0, finWiping = false, hintT = 0, lastShown = f
 let entry = null, entryDefault = '', lastAt = 0, autoT = 0, autoMsg = '', resultSeq = 0, resultArmed = false;
 let attractT = 0, attractPage = 0, loadTipT = 0, wakeLock = null;
 let shots = [], shotT = 0, reflects = 0, shotHits = 0, cracks = [], attackHinted = false;
+let boss = null, bossAppeared = false, bossDefeated = false;
 const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT });
 const effectState = { get fx() { return fx; }, set fx(value) { fx = value; } };
 const { burst, ring, addText, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
@@ -336,7 +339,7 @@ const attackState = {
   get feverT() { return feverT; },
   set feverT(value) { feverT = value; },
 };
-const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText });
+const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0 });
 
 const screens = { menu: $('#menu'), loading: $('#loading'), ready: $('#ready'), result: $('#result'), paused: $('#pause') };
 function setState(s) {
@@ -394,11 +397,12 @@ function chooseType() {
 }
 function updateSpawner(dt) {
   if (starCool > 0) starCool -= dt;
-  spawnT -= dt; if (spawnT > 0 || monsters.length >= TUNING.maxMonsters) return;
+  const maxMonsters = boss && boss.hp > 0 ? TUNING.boss.maxMonsters : TUNING.maxMonsters;
+  spawnT -= dt; if (spawnT > 0 || monsters.length >= maxMonsters) return;
   const p = elapsed / S.time, D = diffCfg();
   spawnT = D.spawn * (1 - .45 * p) * rnd(.75, 1.25) * (feverT > 0 ? .65 : 1);
   const n = (Math.random() < .12 && elapsed > 5) ? rndi(2, 3) : 1;
-  for (let i = 0; i < n; i++) spawn(chooseType());
+  for (let i = 0; i < n && monsters.length < maxMonsters; i++) spawn(chooseType());
 }
 function updateMonster(m, dt) {
   m.age += dt; if (m.flash > 0) m.flash -= dt; if (m.cool > 0) m.cool -= dt;
@@ -411,7 +415,38 @@ function updateMonster(m, dt) {
 
 // ---- 当たり判定とスコア ----
 function multOf(c) { return comboMultiplier(c, feverT > 0); }
-function testHits() {
+function maybeSpawnBoss() {
+  if (!shouldSpawnBoss(S.boss, bossAppeared, timeLeft, TUNING.boss.appearAt)) return;
+  bossAppeared = true;
+  boss = createBoss(TUNING.boss, W);
+  if (monsters.length > TUNING.boss.maxMonsters) monsters.length = TUNING.boss.maxMonsters;
+  shots = [];
+  banner('キングがあらわれた！', 'warn band', 1800);
+  Snd.alarm();
+}
+function testHits(dt = 0) {
+  if (boss && boss.hp > 0) {
+    for (const p of ptrs) {
+      if (!p.active) continue;
+      const speed = dt > 0 ? Math.hypot(p.x - p.ox, p.y - p.oy) / dt : 0;
+      if (speed < TUNING.boss.minSpeed || segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) > TUNING.boss.radius) continue;
+      const result = damageBoss(boss, speed, TUNING.boss);
+      if (!result.applied) continue;
+      burst(boss.x, boss.y, TUNING.boss.color, 14, 260, .55);
+      addText(boss.x, boss.y - TUNING.boss.radius, `-${TUNING.boss.damage}`, '#ffffff', 28);
+      if (result.defeated) {
+        bossDefeated = true;
+        score += result.bonus;
+        ring(boss.x, boss.y, TUNING.boss.color, TUNING.boss.radius * 2);
+        banner('ボスをたおした！', 'call c5', 1700, `+${result.bonus}点`);
+        Snd.big();
+        confetti(70);
+      } else {
+        Snd.hurt();
+      }
+      break;
+    }
+  }
   const pad = diffCfg().pad;
   for (const m of monsters) {
     if (m.dead || m.cool > 0) continue;
@@ -528,6 +563,7 @@ function resetRound() {
   monsters = []; fx = []; score = 0; shown = 0; combo = 0; maxCombo = 0; comboT = 0; kills = 0; bombs = 0; feverT = 0; starCool = 0;
   timeLeft = S.time; elapsed = 0; spawnT = .6; shake = 0; flashRed = 0; hitStop = 0; lastShown = false; lastSec = 99;
   shots = []; cracks = []; shotT = TUNING.attacks.startAfter; reflects = 0; shotHits = 0; attackHinted = false;
+  boss = null; bossAppeared = false; bossDefeated = false;
 }
 // ---- READY? → 3 → 2 → 1 → START! ----
 function startCountdown() { resetRound(); cdT = 0; cdStage = -1; setState('countdown'); }
@@ -547,10 +583,12 @@ function updatePlay(dt) {
   elapsed += dt; hintT += dt; timeLeft -= dt;
   if (feverT > 0) feverT = Math.max(0, feverT - dt);
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
+  maybeSpawnBoss();
+  updateBoss(boss, dt, TUNING.boss, W);
   updateSpawner(dt);
   for (const m of monsters) updateMonster(m, dt);
   updateAttacks(dt);
-  testHits();
+  testHits(dt);
   monsters = monsters.filter(m => !m.dead);
   if (!lastShown && timeLeft <= 10 && S.time > 12) { lastShown = true; banner('ラスト10びょう！', 'last band', 1400); Snd.alarm(); }
   const sec = Math.ceil(timeLeft); if (sec !== lastSec) { lastSec = sec; if (sec <= 5 && sec > 0) Snd.tick(); }
@@ -585,6 +623,9 @@ function endRound() {
   const rk = rankOf(score), em = $('#emblem'); $('#rankLetter').textContent = rk; em.dataset.rank = rk;
   $('#resScore').textContent = '0'; $('#resCombo').textContent = String(maxCombo); $('#resKills').textContent = String(kills); $('#resBombs').textContent = String(bombs);
   $('#resReflect').textContent = String(reflects); $('#st4').hidden = !S.attack; $('#rStats').classList.toggle('four', S.attack);
+  const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
+  $('#bossResult').hidden = !bossRemaining;
+  if (bossRemaining) $('#bossResult').textContent = `ボスのHP 残り${Math.round(boss.hp / boss.maxHp * 100)}%`;
   $('#secret').innerHTML = '<b>AIのひみつ</b>　' + pick(SECRETS);
   const nm = $('#nameInput');
   const before = S.booth ? todayScores() : allScores().sort((a, b) => b.s - a.s);
@@ -705,6 +746,7 @@ function bindRadios(name, key, cast, show = v => String(v)) {
 bindRadios('mode', 'mode', v => v); bindRadios('diff', 'diff', v => v); bindRadios('time', 'time', v => parseInt(v, 10));
 bindRadios('booth', 'booth', v => v === '1', v => v ? '1' : '0'); bindRadios('view', 'view', v => v);
 bindRadios('attack', 'attack', v => v === '1', v => v ? '1' : '0');
+bindRadios('boss', 'boss', v => v === '1', v => v ? '1' : '0');
 $('#embedNote').hidden = !embedded;
 function goFull(on) {
   try {
@@ -885,6 +927,44 @@ function drawMonster(m, t, alpha = 1) {
   if (m.flash > 0) { ctx.globalAlpha = alpha * clamp(m.flash / .15, 0, 1) * .65; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, m.r * .95, 0, TAU); ctx.fill(); }
   ctx.restore();
 }
+function drawBoss() {
+  if (!boss || boss.hp <= 0) return;
+  const radius = TUNING.boss.radius;
+  ctx.save();
+  ctx.globalAlpha = .92;
+  ctx.translate(boss.x, boss.y);
+  if (SPR.boss) {
+    ctx.drawImage(SPR.boss, -radius, -radius, radius * 2, radius * 2);
+  } else {
+    drawSlime({ r: radius, vx: boss.direction * TUNING.boss.moveSpeed, vy: 0 });
+    ctx.fillStyle = '#ffd23f';
+    ctx.strokeStyle = '#8b5a00';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(-radius * .48, -radius * .76);
+    ctx.lineTo(-radius * .3, -radius * 1.08);
+    ctx.lineTo(0, -radius * .83);
+    ctx.lineTo(radius * .3, -radius * 1.08);
+    ctx.lineTo(radius * .48, -radius * .76);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const barWidth = radius * 2;
+  const barHeight = TUNING.boss.barHeight;
+  const barX = boss.x - barWidth / 2;
+  const barY = boss.y - radius - TUNING.boss.barOffset - barHeight;
+  ctx.fillStyle = 'rgba(0,0,0,.8)';
+  ctx.fillRect(barX, barY, barWidth, barHeight);
+  ctx.fillStyle = TUNING.boss.color;
+  ctx.fillRect(barX, barY, barWidth * clamp(boss.hp / boss.maxHp, 0, 1), barHeight);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(barX, barY, barWidth, barHeight);
+  txt('スライムキング', boss.x, barY - TUNING.boss.barOffset / 3, 16, '#ffffff', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.9)' });
+}
 function drawHands() {
   ctx.save(); ctx.lineWidth = 2.5; ctx.lineCap = 'round';
   for (const hh of AI.hands) {
@@ -1006,7 +1086,7 @@ function render(t) {
     if (state === 'ready') for (const m of deco) drawMonster(m, t, .22);
     if (runMode === 'motion' && Cam.ready && state !== 'result') Motion.draw(S.eye || state === 'ready' ? .95 : .5);
     if (runMode === 'ai' && Cam.ready && (S.eye || state === 'ready' || state === 'countdown')) drawHands();
-    if (state !== 'result') { const fa = state === 'finish' ? clamp(1 - finT / 1.2, 0, 1) : 1; for (const m of monsters) drawMonster(m, t, fa); for (const s of shots) drawShot(s, t, fa); }
+    if (state !== 'result') { const fa = state === 'finish' ? clamp(1 - finT / 1.2, 0, 1) : 1; for (const m of monsters) drawMonster(m, t, fa); drawBoss(); for (const s of shots) drawShot(s, t, fa); }
     drawFx();
     if (state !== 'result' && state !== 'finish') drawTrails(t);
   }
@@ -1048,5 +1128,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, nextPlayer, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();
