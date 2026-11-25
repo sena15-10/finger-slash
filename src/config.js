@@ -27,19 +27,21 @@ const TUNING = {
     maxAtOnce: 2,          // 同時に飛んでくる火の玉の上限
   },
   boss: {
-    appearAt: 5,
-    hp: 150,
-    damage: 10,
-    hitCooldown: 0.12,
-    minSpeed: 220,
-    bonus: 500,
+    appearAt: { 30: 5, 60: 15 },     // 残り時間がこの秒数以下になったら登場（プレイ時間ごと）
+    hp: { 30: 150, 60: 300 },        // 体力（プレイ時間ごと）
     radius: 96,
-    moveSpeed: 90,
-    startAngle: 0.35,
-    turnInterval: 2,
-    turnAngle: 0.2,
-    centerY: 260,
-    maxMonsters: 6,
+    yRatio: 0.28,                    // 画面の上から何割の高さに出るか
+    shotInterval: 3,                 // 火の玉を出す間かく（びょう）。出現+3, +6…
+    telegraph: 0.6,                  // 火の玉が出る何びょう前から光って「！」を出すか
+    maxShots: 2,                     // ボスの火の玉が同時に飛べる上限
+    reflectDamage: 30,               // はね返した火の玉が当たったときのダメージ
+    slashDamage: 10,                 // 斬りが当たったときのダメージ
+    slashCooldown: 0.12,             // 同じ人の斬りダメージが連続で入るまでの間かく（びょう）
+    minSlashSpeed: 220,              // これより速い斬りだけ有効（px/びょう）
+    defeatBonus: 500,                // 撃破したときのボーナス点（コンボ倍率なし）
+    moveSpeed: 60,                   // 左右に動く速さ
+    moveMargin: 140,                 // 画面の左右の端から、これだけ内側を往復する
+    maxMonsters: 6,                  // ボスがいる間の、通常モンスターの上限
     barHeight: 10,
     barOffset: 18,
     color: '#5dff9a',

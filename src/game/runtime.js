@@ -6,7 +6,7 @@ import { createAudio } from '../audio/audio.js';
 import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
 import { createAttacks } from './attacks.js';
-import { createBoss, damageBoss, shouldSpawnBoss, updateBoss } from './boss.js';
+import { bossHpPercent, createBoss, damageBoss, reflectDamageBoss, shouldSpawnBoss, updateBoss, updateBossShots } from './boss.js';
 import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
 
 
@@ -47,7 +47,7 @@ const oneOf = (v, list, d) => list.includes(v) ? v : d;
 const S = {
   mode: oneOf(qs.get('mode'), ['ai', 'motion', 'mouse'], oneOf(store.get('mode', 'ai'), ['ai', 'motion', 'mouse'], 'ai')),
   diff: oneOf(qs.get('diff'), ['easy', 'normal', 'hard'], oneOf(store.get('diff', 'normal'), ['easy', 'normal', 'hard'], 'normal')),
-  time: clamp(parseInt(qs.get('time') || store.get('time', TUNING.roundSeconds), 10) || TUNING.roundSeconds, 10, 180),
+  time: oneOf(parseInt(qs.get('time'), 10), [30, 60], oneOf(parseInt(store.get('time', 30), 10), [30, 60], 30)),
   sound: qs.get('mute') === '1' ? false : !!store.get('sound', true),
   eye: qs.get('eye') === '1',
   booth: qs.has('booth') ? qs.get('booth') !== '0' : store.get('booth', true) !== false,
@@ -342,7 +342,19 @@ const attackState = {
   get feverT() { return feverT; },
   set feverT(value) { feverT = value; },
 };
-const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0 });
+const { updateAttacks, launchShot, reflectShot } = createAttacks({
+  TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText,
+  isBossActive: () => !!boss && boss.hp > 0,
+  getBossPos: () => boss ? { x: boss.x, y: boss.y } : null,
+  onBossReflectHit: s => {
+    if (!boss || boss.hp <= 0) return false;
+    if (Math.hypot(s.x - boss.x, s.y - boss.y) > TUNING.boss.radius + s.r) return false;
+    const result = reflectDamageBoss(boss, TUNING.boss);
+    if (!result.applied) return false;
+    applyBossDamageResult(result, `-${TUNING.boss.reflectDamage}`);
+    return true;
+  },
+});
 
 const screens = { menu: $('#menu'), loading: $('#loading'), ready: $('#ready'), result: $('#result'), paused: $('#pause') };
 function setState(s) {
@@ -419,34 +431,46 @@ function updateMonster(m, dt) {
 // ---- 当たり判定とスコア ----
 function multOf(c) { return comboMultiplier(c, feverT > 0); }
 function maybeSpawnBoss() {
-  if (!shouldSpawnBoss(S.boss, bossAppeared, timeLeft, TUNING.boss.appearAt)) return;
+  const appearAt = TUNING.boss.appearAt[S.time] ?? TUNING.boss.appearAt[30];
+  if (!shouldSpawnBoss(S.boss, bossAppeared, timeLeft, appearAt)) return;
   bossAppeared = true;
-  boss = createBoss(TUNING.boss, W);
+  const hp = TUNING.boss.hp[S.time] ?? TUNING.boss.hp[30];
+  boss = createBoss(TUNING.boss, hp, W, H, elapsed);
   if (monsters.length > TUNING.boss.maxMonsters) monsters.length = TUNING.boss.maxMonsters;
   shots = [];
   banner('キングがあらわれた！', 'warn band', 1800);
   Snd.alarm();
+}
+function applyBossDamageResult(result, label) {
+  burst(boss.x, boss.y, TUNING.boss.color, 14, 260, .55);
+  addText(boss.x, boss.y - TUNING.boss.radius, label, '#ffffff', 28);
+  if (result.defeated) {
+    bossDefeated = true;
+    score += result.bonus;
+    ring(boss.x, boss.y, TUNING.boss.color, TUNING.boss.radius * 2);
+    banner('ボスをたおした！', 'call c5', 1700, `+${result.bonus}点`);
+    Snd.big();
+    confetti(70);
+    shots = shots.filter(s => !s.fromBoss);   // ボスの火の玉は、はね返し扱いにせず消す
+  } else {
+    Snd.hurt();
+  }
+}
+function updateBossAttacks() {
+  if (!boss || boss.hp <= 0) return;
+  const activeBossShots = shots.filter(s => s.fromBoss && !s.gone && s.st !== 'back').length;
+  const action = updateBossShots(boss, elapsed, TUNING.boss, activeBossShots);
+  if (action === 'launch') launchShot({ forceFrom: boss, windup: TUNING.boss.telegraph, radius: TUNING.boss.radius });
 }
 function testHits(dt = 0) {
   if (boss && boss.hp > 0) {
     for (const p of ptrs) {
       if (!p.active) continue;
       const speed = dt > 0 ? Math.hypot(p.x - p.ox, p.y - p.oy) / dt : 0;
-      if (speed < TUNING.boss.minSpeed || segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) > TUNING.boss.radius) continue;
-      const result = damageBoss(boss, speed, TUNING.boss);
+      if (speed < TUNING.boss.minSlashSpeed || segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) > TUNING.boss.radius) continue;
+      const result = damageBoss(boss, speed, TUNING.boss, p === ptrs[0] ? 'p1' : 'p2');
       if (!result.applied) continue;
-      burst(boss.x, boss.y, TUNING.boss.color, 14, 260, .55);
-      addText(boss.x, boss.y - TUNING.boss.radius, `-${TUNING.boss.damage}`, '#ffffff', 28);
-      if (result.defeated) {
-        bossDefeated = true;
-        score += result.bonus;
-        ring(boss.x, boss.y, TUNING.boss.color, TUNING.boss.radius * 2);
-        banner('ボスをたおした！', 'call c5', 1700, `+${result.bonus}点`);
-        Snd.big();
-        confetti(70);
-      } else {
-        Snd.hurt();
-      }
+      applyBossDamageResult(result, `-${TUNING.boss.slashDamage}`);
       break;
     }
   }
@@ -596,7 +620,8 @@ function updatePlay(dt) {
   if (feverT > 0) feverT = Math.max(0, feverT - dt);
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
   maybeSpawnBoss();
-  updateBoss(boss, dt, TUNING.boss, W, H);
+  updateBoss(boss, dt, TUNING.boss, W);
+  updateBossAttacks();
   updateSpawner(dt);
   for (const m of monsters) updateMonster(m, dt);
   updateAttacks(dt);
@@ -639,7 +664,7 @@ function endRound() {
   $('#resReflect').textContent = String(reflects); $('#st4').hidden = !S.attack; $('#rStats').classList.toggle('four', S.attack);
   const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
   $('#bossResult').hidden = !bossRemaining;
-  if (bossRemaining) $('#bossResult').textContent = `ボスのHP 残り${Math.round(boss.hp / boss.maxHp * 100)}%`;
+  if (bossRemaining) $('#bossResult').textContent = `ボスのHP 残り${bossHpPercent(boss)}%`;
   const ghostResult = S.ghost ? ghostResultText(score, previousGhost) : '';
   $('#ghostResult').hidden = !ghostResult;
   if (ghostResult) $('#ghostResult').textContent = ghostResult;
@@ -978,13 +1003,20 @@ function drawGhostRace() {
 function drawBoss() {
   if (!boss || boss.hp <= 0) return;
   const radius = TUNING.boss.radius;
+  if (boss.telegraphUntil && elapsed < boss.telegraphUntil) {
+    const pulse = .5 + .5 * Math.sin(elapsed * 20);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .5 + .3 * pulse;
+    const glow = ctx.createRadialGradient(boss.x, boss.y, 0, boss.x, boss.y, radius * 1.6);
+    glow.addColorStop(0, 'rgba(255,255,255,.95)'); glow.addColorStop(1, 'rgba(255,80,40,0)');
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(boss.x, boss.y, radius * 1.6, 0, TAU); ctx.fill(); ctx.restore();
+  }
   ctx.save();
   ctx.globalAlpha = .92;
   ctx.translate(boss.x, boss.y);
   if (SPR.boss) {
     ctx.drawImage(SPR.boss, -radius, -radius, radius * 2, radius * 2);
   } else {
-    drawSlime({ r: radius, vx: boss.vx, vy: boss.vy });
+    drawSlime({ r: radius, vx: boss.vx, vy: 0 });
     ctx.fillStyle = '#ffd23f';
     ctx.strokeStyle = '#8b5a00';
     ctx.lineWidth = 4;

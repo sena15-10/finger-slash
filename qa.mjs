@@ -5,18 +5,18 @@ import { createBoss, damageBoss, updateBoss } from './src/game/boss.js';
 import { createGhostSample, packGhost, sampleGhost, unpackGhost } from './src/game/ghost.js';
 
 test('boss can be defeated in fifteen cooldown-spaced slashes for a flat bonus', () => {
-  const boss = createBoss(TUNING.boss, 960);
+  const boss = createBoss(TUNING.boss, TUNING.boss.hp[30], 960, 540, 0);
   let bonus = 0;
-  for (let hit = 0; hit < TUNING.boss.hp / TUNING.boss.damage; hit++) {
-    const result = damageBoss(boss, TUNING.boss.minSpeed, TUNING.boss);
+  for (let hit = 0; hit < TUNING.boss.hp[30] / TUNING.boss.slashDamage; hit++) {
+    const result = damageBoss(boss, TUNING.boss.minSlashSpeed, TUNING.boss, 'p1');
     assert.equal(result.applied, true);
     bonus += result.bonus;
-    updateBoss(boss, TUNING.boss.hitCooldown, TUNING.boss, 960, 540);
+    updateBoss(boss, TUNING.boss.slashCooldown, TUNING.boss, 960);
   }
 
   assert.equal(boss.hp, 0);
-  assert.equal(bonus, TUNING.boss.bonus);
-  assert.equal(damageBoss(boss, TUNING.boss.minSpeed, TUNING.boss).applied, false);
+  assert.equal(bonus, TUNING.boss.defeatBonus);
+  assert.equal(damageBoss(boss, TUNING.boss.minSlashSpeed, TUNING.boss, 'p1').applied, false);
 });
 
 test('a second-round ghost can be restored and replayed at its matching timestamp', () => {
