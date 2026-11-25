@@ -1,4 +1,5 @@
-export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, getBossPos = () => null, onBossReflectHit = null }) {
+export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, getBossPos = () => null, onBossReflectHit = null,
+  addScore = () => {}, resetCombo = () => {}, playerIndexForPtr = () => 0, playerIndexForX = () => 0 }) {
 function updateAttacks(dt) {
   const A = TUNING.attacks, fly = A.flyTime[S.diff] || 1.8;
   const bossOn = isBossActive();
@@ -55,14 +56,16 @@ function reflectShot(s, p) {
   const bossPos = s.fromBoss ? getBossPos() : null;
   const dx = bossPos ? bossPos.x - s.x : (p ? p.x - p.ox : 0), dy = bossPos ? bossPos.y - s.y : (p ? p.y - p.oy : -1), l = Math.hypot(dx, dy) || 1;
   s.vx = dx / l * 420; s.vy = dy / l * 420 - (bossPos ? 0 : 380);   // ボスの火の玉は、ボスへ。それ以外は、斬った向きに奥（上）へはじく
-  bumpCombo();
-  const pts = TUNING.attacks.reflectPts * multOf(state.combo); state.score += pts;
+  const pi = playerIndexForPtr(p); s.reflectedByPi = pi;   // ボスに当たったとき、この人のダメージにする
+  bumpCombo(pi);
+  const pts = TUNING.attacks.reflectPts * multOf(pi); addScore(pi, pts);
   burst(s.x, s.y, '#ffd23f', 20, 340, .6); burst(s.x, s.y, '#ffffff', 10, 260, .4); ring(s.x, s.y, '#ffffff', s.r * 2.2); addSlash(s.x, s.y, Math.atan2(dy, dx), s.r);
   addText(s.x, s.y - 6, `+${pts}`, '#ffe66b', 30); addText(s.x, s.y - s.r - 26, 'はじいた！', '#ffffff', 22, 1);
   Snd.clang(); state.shake = Math.max(state.shake, .25);
 }
 function shotHit(s) {
-  s.gone = true; state.shotHits++; state.combo = 0; state.comboT = 0;
+  s.gone = true; state.shotHits++;
+  resetCombo(playerIndexForX(s.x));   // 届いた位置の側（2人プレイなら左右）の人のコンボが切れる
   state.timeLeft = Math.max(0, state.timeLeft - TUNING.attacks.penaltySeconds);
   state.shake = 1; state.flashRed = .9; burst(s.x, s.y, '#ff7a1a', 36, 480, .9); burst(s.x, s.y, '#ffd23f', 20, 320, .7);
   state.cracks.push(makeCrack(s.x, s.y)); Snd.impact();

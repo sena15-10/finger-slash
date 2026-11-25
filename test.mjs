@@ -8,6 +8,12 @@ import {
   addGauge, classifyHandShape, consumeFist, countBentFingers, createGestureState, createHoldTracker,
   shotInsideShield, tryActivateShield, updateHold, updateShieldTimers,
 } from './src/game/gesture.js';
+import {
+  creditBossResult, handSize, makeTwoEntry, playerIndexForX, pruneTwoScores, removeTodayTwoScores,
+  selectTwoPlayerHands, twoBoardRows, twoPlayerVerdict,
+} from './src/game/two.js';
+import { comboMultiplier } from './src/game/scoring.js';
+import { MON } from './src/game/monsters.js';
 
 // にせAIの手: 曲がっている指の本数(0〜4)・大きさ・位置を指定して、21点のランドマーク（画面ピクセル座標）を作る
 function makeHandLandmarks({ bentCount = 0, size = 150, cx = 480, cy = 270 } = {}) {
@@ -20,6 +26,11 @@ function makeHandLandmarks({ bentCount = 0, size = 150, cx = 480, cy = 270 } = {
     points[tip] = { x: fx, y: cy + size - (bent ? size * 0.2 : size * 0.9) };
   });
   return points;
+}
+// にせAIの「見つけた手」1つ分（runtime の AI.hands と同じ形: pts・raw・size）
+function makeHand(opts = {}) {
+  const pts = makeHandLandmarks(opts);
+  return { pts, raw: pts, size: handSize(pts) };
 }
 
 const noop = () => {};
@@ -362,4 +373,243 @@ test('fireballs inside an active shield are consumed; an inactive shield consume
   assert.equal(shotInsideShield(500 + TUNING.gesture.shieldRadius + 1, 300, g, TUNING.gesture.shieldRadius), false);
   g.shieldActive = false;
   assert.equal(shotInsideShield(500, 300, g, TUNING.gesture.shieldRadius), false);
+});
+
+// ============================================================
+//  フェーズ3: 2人同時プレイ
+// ============================================================
+const TW = 960;
+const twoOpts = { width: TW, minPx: TUNING.boothMinHandPx, centerDeadZone: TUNING.two.centerDeadZone };
+
+test('TUNING.two keeps the specified values', () => {
+  assert.deepEqual(TUNING.two, { duration: 60, maxHands: 4, centerDeadZone: 0.04 });
+});
+
+test('two players: one hand on each side goes to left (0) and right (1)', () => {
+  const left = makeHand({ cx: 200 }), right = makeHand({ cx: 760 });
+  const [l, r] = selectTwoPlayerHands([right, left], twoOpts);   // AIが返す順番に関係なく
+  assert.equal(l, left);
+  assert.equal(r, right);
+});
+
+test('two players: with a big and a small hand on one side, only the bigger one is used', () => {
+  const big = makeHand({ cx: 250, size: 200 }), small = makeHand({ cx: 150, size: 120 }), right = makeHand({ cx: 700 });
+  const [l, r] = selectTwoPlayerHands([small, right, big], twoOpts);
+  assert.equal(l, big);
+  assert.equal(r, right);
+  const [l2, r2] = selectTwoPlayerHands([small, big], twoOpts);   // 右にだれもいなければ、右は空
+  assert.equal(l2, big);
+  assert.equal(r2, null);
+});
+
+test('two players: a hand inside the center dead zone belongs to nobody; just outside it is used', () => {
+  const half = TW * TUNING.two.centerDeadZone / 2;   // 19.2px
+  assert.deepEqual(selectTwoPlayerHands([makeHand({ cx: TW / 2 })], twoOpts), [null, null]);
+  assert.deepEqual(selectTwoPlayerHands([makeHand({ cx: TW / 2 + Math.floor(half) })], twoOpts), [null, null]);
+  assert.deepEqual(selectTwoPlayerHands([makeHand({ cx: TW / 2 - Math.floor(half) })], twoOpts), [null, null]);
+  const justRight = makeHand({ cx: TW / 2 + Math.ceil(half) }), justLeft = makeHand({ cx: TW / 2 - Math.ceil(half) });
+  assert.deepEqual(selectTwoPlayerHands([justRight, justLeft], twoOpts), [justLeft, justRight]);
+});
+
+test('two players: a small hand from someone standing behind is ignored, even when it is the only one on that side', () => {
+  const back = makeHand({ cx: 800, size: 20 });   // 写った大きさ 12px < boothMinHandPx
+  assert.ok(back.size < TUNING.boothMinHandPx);
+  const front = makeHand({ cx: 200 });
+  assert.deepEqual(selectTwoPlayerHands([back, front], twoOpts), [front, null]);
+  // ブース表示でなければ（minPx=0）、小さい手も使う
+  assert.deepEqual(selectTwoPlayerHands([back, front], { ...twoOpts, minPx: 0 }), [front, back]);
+});
+
+test('two players: four hands (two people, both hands up) -> one per side, the biggest each', () => {
+  const hands = [makeHand({ cx: 120, size: 140 }), makeHand({ cx: 330, size: 170 }), makeHand({ cx: 620, size: 160 }), makeHand({ cx: 860, size: 150 })];
+  const [l, r] = selectTwoPlayerHands(hands, twoOpts);
+  assert.equal(l, hands[1]);
+  assert.equal(r, hands[2]);
+});
+
+test('playerIndexForX: always 0 for one player; left half 0 / right half 1 for two players', () => {
+  for (const x of [0, 479, 480, 959]) assert.equal(playerIndexForX(x, TW, false), 0);
+  assert.equal(playerIndexForX(0, TW, true), 0);
+  assert.equal(playerIndexForX(479.9, TW, true), 0);
+  assert.equal(playerIndexForX(480, TW, true), 1);
+  assert.equal(playerIndexForX(959, TW, true), 1);
+});
+
+// 2人プレイの攻撃まわり: runtime と同じつなぎ方で createAttacks を作る
+function makeTwoAttacks({ two = true, boss = null } = {}) {
+  const ptrs = [{ x: 0, y: 0, ox: 0, oy: 0 }, { x: 0, y: 0, ox: 0, oy: 0 }];
+  const log = { scores: [0, 0], resets: [], bumps: [] };
+  const state = { shots: [], shotT: 99, timeLeft: 60, monsters: [], reflects: 0, shotHits: 0, shake: 0, flashRed: 0, attackHinted: true, cracks: [], feverT: 0 };
+  const attacks = createAttacks({
+    TUNING, MON: {}, S: { attack: true, diff: 'normal', two }, state, ...stubFx,
+    bumpCombo: pi => log.bumps.push(pi), multOf: () => 1,
+    isBossActive: () => !!boss && boss.hp > 0, getBossPos: () => boss ? { x: boss.x, y: boss.y } : null,
+    addScore: (pi, v) => { log.scores[pi] += v; }, resetCombo: pi => log.resets.push(pi),
+    playerIndexForPtr: p => two && p === ptrs[1] ? 1 : 0,
+    playerIndexForX: x => playerIndexForX(x, TW, two),
+  });
+  return { attacks, state, ptrs, log };
+}
+
+test('reflecting a fireball scores for (and bumps the combo of) the player who slashed it, and remembers who did', () => {
+  const { attacks, ptrs, log } = makeTwoAttacks();
+  const s = attacks.launchShot();
+  attacks.reflectShot(s, ptrs[1]);
+  assert.equal(s.reflectedByPi, 1);
+  assert.deepEqual(log.bumps, [1]);
+  assert.deepEqual(log.scores, [0, TUNING.attacks.reflectPts]);
+  const s2 = attacks.launchShot();
+  attacks.reflectShot(s2, ptrs[0]);
+  assert.equal(s2.reflectedByPi, 0);
+  assert.deepEqual(log.scores, [TUNING.attacks.reflectPts, TUNING.attacks.reflectPts]);
+});
+
+test('a fireball that lands breaks the combo of the player on that side only', () => {
+  const fly = TUNING.attacks.flyTime.normal;
+  for (const [tx, two, expected] of [[700, true, 1], [200, true, 0], [700, false, 0]]) {
+    const { attacks, state, log } = makeTwoAttacks({ two });
+    const s = attacks.launchShot(); s.tx = tx;
+    attacks.updateAttacks(TUNING.attacks.windup + 0.01);   // たまり終わって飛び出す
+    attacks.updateAttacks(fly + 0.01);                     // 届く
+    assert.equal(state.shotHits, 1);
+    assert.deepEqual(log.resets, [expected], `tx=${tx} two=${two}`);
+  }
+});
+
+test('boss defeat bonus goes to whoever dealt the final damage (slash, reflect, or fist)', () => {
+  // 左の人が削って、右の人がとどめ
+  const boss = createBoss(TUNING.boss, TUNING.boss.slashDamage * 2, 960, 540, 0);
+  const scores = [0, 0], add = (pi, v) => { scores[pi] += v; };
+  creditBossResult(damageBoss(boss, TUNING.boss.minSlashSpeed, TUNING.boss, 'p1'), 0, add);
+  assert.deepEqual(scores, [0, 0]);
+  creditBossResult(damageBoss(boss, TUNING.boss.minSlashSpeed, TUNING.boss, 'p2'), 1, add);   // 人ごとのクールダウンなので、すぐ入る
+  assert.equal(boss.hp, 0);
+  assert.deepEqual(scores, [0, TUNING.boss.defeatBonus]);
+
+  // はね返し: s.reflectedByPi の人に入る
+  const boss2 = createBoss(TUNING.boss, TUNING.boss.reflectDamage, 960, 540, 0);
+  const { attacks, ptrs } = makeTwoAttacks({ boss: boss2 });
+  const s = attacks.launchShot({ forceFrom: boss2, windup: 0, radius: TUNING.boss.radius });
+  attacks.reflectShot(s, ptrs[0]);
+  const scores2 = [0, 0];
+  creditBossResult(reflectDamageBoss(boss2, TUNING.boss), s.reflectedByPi ?? 0, (pi, v) => { scores2[pi] += v; });
+  assert.deepEqual(scores2, [TUNING.boss.defeatBonus, 0]);
+
+  // グーの全体攻撃でとどめ
+  const boss3 = createBoss(TUNING.boss, TUNING.gesture.fistBossDamage, 960, 540, 0);
+  const scores3 = [0, 0];
+  creditBossResult(damageBossFlat(boss3, TUNING.gesture.fistBossDamage, TUNING.boss), 1, (pi, v) => { scores3[pi] += v; });
+  assert.deepEqual(scores3, [0, TUNING.boss.defeatBonus]);
+  // 撃破していないダメージは何も入れない
+  assert.equal(creditBossResult({ applied: true, defeated: false, bonus: 0 }, 0, () => assert.fail()), 0);
+});
+
+test('two-player result: higher score wins, equal is a draw', () => {
+  assert.equal(twoPlayerVerdict(500, 300), 'l');
+  assert.equal(twoPlayerVerdict(300, 500), 'r');
+  assert.equal(twoPlayerVerdict(400, 400), 'draw');
+  assert.equal(twoPlayerVerdict(0, 0), 'draw');
+});
+
+test('two-player ranking stores {total,l,r,ts}, shows "左◯／右◯", keeps today + best 50 of other days, reset removes only today', () => {
+  const dayKey = ts => String(Math.floor(ts / 1000));   // テスト用: 1000ms = 1日
+  const e = makeTwoEntry(300, 450, 5500);
+  assert.deepEqual(e, { total: 750, l: 300, r: 450, ts: 5500 });
+  assert.deepEqual(Object.keys(e).sort(), ['l', 'r', 'total', 'ts']);
+  assert.deepEqual(twoBoardRows([e]), [{ n: '左300／右450', s: 750, at: 5500 }]);
+
+  const old = Array.from({ length: 60 }, (_, i) => makeTwoEntry(i, 0, 1000 + i));   // 前の日の60件
+  const today = Array.from({ length: 70 }, (_, i) => makeTwoEntry(0, i, 5000 + i));
+  const kept = pruneTwoScores([...old, ...today, { s: 10 }, null], '5', dayKey);   // こわれた記録・1人用の形は捨てる
+  assert.equal(kept.filter(x => dayKey(x.ts) === '5').length, 70);
+  const keptOld = kept.filter(x => dayKey(x.ts) === '1');
+  assert.equal(keptOld.length, 50);
+  assert.equal(Math.min(...keptOld.map(x => x.total)), 10);   // ベスト50（59〜10）
+
+  const afterReset = removeTodayTwoScores(kept, '5', dayKey);
+  assert.equal(afterReset.length, 50);
+  assert.ok(afterReset.every(x => dayKey(x.ts) === '1'));
+  assert.deepEqual(removeTodayTwoScores(null, '5', dayKey), []);
+});
+
+// ============================================================
+//  perf: 実ブラウザ・実AIなし。純粋ロジックだけを1コマずつ動かして時間を測る
+//  （描画・カメラ・MediaPipe の推論時間は含まない）
+// ============================================================
+function segDist(ax, ay, bx, by, px, py) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy; let t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0; t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+function simulateFrames({ two, frames }) {
+  const W = 960, H = 540, dt = 1 / 60, times = [];
+  const types = Object.keys(MON);
+  const ptrs = [{ x: 200, y: 300, ox: 200, oy: 300, active: true }, { x: 700, y: 300, ox: 700, oy: 300, active: true }];
+  const scores = [0, 0];
+  const boss = createBoss(TUNING.boss, 1e9, W, H, 0);   // ずっと居るボス
+  const state = { shots: [], shotT: 99, timeLeft: 60, monsters: [], reflects: 0, shotHits: 0, shake: 0, flashRed: 0, attackHinted: true, cracks: [], feverT: 0 };
+  const attacks = createAttacks({
+    TUNING, MON, S: { attack: true, diff: 'normal', two }, state, ...stubFx,
+    isBossActive: () => boss.hp > 0, getBossPos: () => ({ x: boss.x, y: boss.y }),
+    onBossReflectHit: s => Math.hypot(s.x - boss.x, s.y - boss.y) <= TUNING.boss.radius + s.r && reflectDamageBoss(boss, TUNING.boss).applied,
+    addScore: (pi, v) => { scores[pi] += v; }, playerIndexForPtr: p => two && p === ptrs[1] ? 1 : 0, playerIndexForX: x => playerIndexForX(x, W, two),
+  });
+  const spawnMon = i => ({ type: types[i % types.length], r: 30, hr: 30, x: (i * 67) % W, y: H + 20, vx: (i % 5 - 2) * 40, vy: -600, g: 520, age: 0, dead: false });
+  state.monsters = Array.from({ length: TUNING.maxMonsters }, (_, i) => spawnMon(i));
+  const gestures = two ? [createGestureState(), createGestureState()] : [createGestureState()];
+  const ghostPrev = two ? null : unpackGhost(packGhost(Array.from({ length: 600 }, (_, i) => createGhostSample(i * 0.1, [{ x: 0.3, y: 0.5 }, { x: 0.7, y: 0.5 }], i * 10))));
+  const ghostRec = [];
+  let elapsed = 0;
+  for (let f = 0; f < frames; f++) {
+    const t0 = performance.now();
+    elapsed += dt;
+    // にせAI: 2人なら手4つ、1人なら手2つ（毎コマ、ランドマークを作り直す）
+    const n = two ? 4 : 2, hands = [];
+    for (let i = 0; i < n; i++) hands.push(makeHand({ cx: 120 + i * (W - 240) / (n - 1) + Math.sin(elapsed * 3 + i) * 40, cy: 200, size: 120 + i * 10, bentCount: (f + i) % 5 }));
+    const picked = two ? selectTwoPlayerHands(hands, { width: W, minPx: TUNING.boothMinHandPx, centerDeadZone: TUNING.two.centerDeadZone }) : hands.slice(0, 2);
+    picked.forEach((h, i) => { if (!h) return; h.shape = classifyHandShape(h.raw, TUNING.gesture); const p = ptrs[i]; p.ox = p.x; p.oy = p.y; p.x = h.pts[8].x; p.y = h.pts[8].y; });
+    // ボス・ボスの火の玉（2発まで）
+    updateBoss(boss, dt, TUNING.boss, W);
+    const active = state.shots.filter(s => s.fromBoss && s.st !== 'back').length;
+    if (updateBossShots(boss, elapsed, TUNING.boss, active) === 'launch') attacks.launchShot({ forceFrom: boss, windup: TUNING.boss.telegraph, radius: TUNING.boss.radius });
+    attacks.updateAttacks(dt);
+    // てき（上限いっぱい）の動きと当たり判定
+    for (let i = 0; i < state.monsters.length; i++) {
+      const m = state.monsters[i];
+      m.age += dt; m.vy += m.g * dt; m.x += m.vx * dt; m.y += m.vy * dt;
+      for (const p of ptrs) if (p.active && segDist(p.ox, p.oy, p.x, p.y, m.x, m.y) <= m.hr + 15) { scores[ptrs.indexOf(p) && two ? 1 : 0] += 10 * comboMultiplier(3, false); }
+      if (m.y > H + 90 && m.vy > 0) state.monsters[i] = spawnMon(f + i);
+    }
+    for (const p of ptrs) {
+      const speed = Math.hypot(p.x - p.ox, p.y - p.oy) / dt;
+      if (segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) <= TUNING.boss.radius) damageBoss(boss, speed, TUNING.boss, p === ptrs[0] ? 'p1' : 'p2');
+      for (const s of state.shots) if (s.st === 'fly' && gestures.some(g => shotInsideShield(s.x, s.y, g, TUNING.gesture.shieldRadius))) s.gone = true;
+    }
+    // 手の技（グー演出: 5びょうごとに全体攻撃）
+    gestures.forEach((g, pi) => {
+      const h = picked[pi] || picked[0];
+      updateHold(g.fist, !!h && h.shape === 'fist', dt, TUNING.gesture.graceMs);
+      updateHold(g.open, !!h && h.shape === 'open', dt, TUNING.gesture.graceMs);
+      updateShieldTimers(g, dt); tryActivateShield(g, TUNING.gesture);
+      if (f % 300 === 0) { g.gauge = 100; g.fist.held = TUNING.gesture.fistHold; }
+      if (consumeFist(g, TUNING.gesture)) { for (const m of state.monsters) m.dead = true; state.monsters = state.monsters.map((_, i) => spawnMon(f + i)); damageBossFlat(boss, TUNING.gesture.fistBossDamage, TUNING.boss); }
+    });
+    // ゴースト（1人のときだけ）
+    if (ghostPrev) {
+      sampleGhost(ghostPrev, elapsed);
+      if (f % 6 === 0) ghostRec.push(createGhostSample(elapsed, ptrs.map(p => normalizeGhostPoint(p.x, p.y, W, H)), scores[0]));
+    }
+    times.push(performance.now() - t0);
+  }
+  times.sort((a, b) => a - b);
+  const q = k => times[Math.min(times.length - 1, Math.floor(times.length * k))];
+  return { p50: q(0.5), p95: q(0.95), max: times[times.length - 1], shotsSeen: state.reflects + state.shotHits };
+}
+
+test('perf (logic only): one and two players with many enemies, the boss, 2 fireballs, ghost and fist effects stay under 16.7ms p95', t => {
+  simulateFrames({ two: false, frames: 600 });   // 準備運動（JIT）
+  for (const two of [false, true]) {
+    const r = simulateFrames({ two, frames: 3600 });   // 60びょうぶん
+    t.diagnostic(`${two ? '2人' : '1人'}: p50=${r.p50.toFixed(4)}ms p95=${r.p95.toFixed(4)}ms max=${r.max.toFixed(3)}ms`);
+    assert.ok(r.p95 < 16.7, `p95 ${r.p95}ms`);
+  }
 });

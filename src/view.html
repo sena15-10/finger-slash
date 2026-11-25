@@ -3,7 +3,8 @@
 
   <!-- プレイ中の表示 -->
   <div id="hud" aria-hidden="true">
-    <div class="h-score"><span class="h-lbl">SCORE</span><span id="hScore">0</span></div>
+    <div class="h-score"><span class="h-lbl" id="hLbl">SCORE</span><span id="hScore">0</span><span class="h-pc" id="hPc0"></span></div>
+    <div class="h-score h-score2"><span class="h-lbl">右の人</span><span id="hScore2">0</span><span class="h-pc" id="hPc1"></span></div>
     <div class="h-ghost" id="hGhost"><span id="hGhostText"></span><i><b id="hGhostBar"></b></i></div>
     <div class="h-time" id="hTimeBox"><svg viewBox="0 0 100 100"><circle class="trk" cx="50" cy="50" r="42"/><circle id="hRing" class="ring" cx="50" cy="50" r="42"/></svg><span class="h-tl">TIME</span><span id="hTime">30</span></div>
     <div class="h-combo" id="hCombo"><span id="hComboN">0</span><span class="h-cl">COMBO</span><span class="h-mult" id="hMult">×1</span><i class="h-cbar"><b id="hCbar"></b></i></div>
@@ -36,11 +37,19 @@
           <label class="chip"><input type="radio" name="diff" value="normal"><span><i>★★</i>ふつう</span></label>
           <label class="chip"><input type="radio" name="diff" value="hard"><span><i>★★★</i>むずかしい</span></label>
         </div></div>
-      <div class="opt"><span class="olbl">TIME</span>
-        <div class="chips" role="radiogroup" aria-label="じかん">
-          <label class="chip"><input type="radio" name="time" value="30"><span><em>30</em>びょう</span></label>
-          <label class="chip"><input type="radio" name="time" value="60"><span><em>60</em>びょう</span></label>
-        </div></div>
+      <div class="opt-pair">
+        <div class="opt"><span class="olbl">TIME</span>
+          <div class="chips" role="radiogroup" aria-label="じかん">
+            <label class="chip"><input type="radio" name="time" value="30"><span><em>30</em>びょう</span></label>
+            <label class="chip"><input type="radio" name="time" value="60"><span><em>60</em>びょう</span></label>
+          </div></div>
+        <div class="opt"><span class="olbl">人数</span>
+          <div class="chips" role="radiogroup" aria-label="人数">
+            <label class="chip"><input type="radio" name="two" value="0"><span><em>1</em>人</span></label>
+            <label class="chip"><input type="radio" name="two" value="1"><span><em>2</em>人</span></label>
+          </div></div>
+      </div>
+      <p class="opt-note" id="twoNote" hidden>AIハンドのときだけ選べます</p>
       <div class="m-start">
         <button id="play" class="gbtn gold big" type="button"><span>GAME START ▶</span></button>
         <p class="privacy">カメラの映像は、この端末の中だけで使います。録画も送信もしません。</p>
@@ -151,6 +160,11 @@
     <div class="r-main gp rv" id="rMain">
       <p class="r-lbl">SCORE</p>
       <p class="r-score" id="resScore">0</p>
+      <div class="two-result" id="twoResult">
+        <div class="tp" id="tpL"><p class="tp-score">左の人 <b id="resL">0</b>点</p><p class="tp-win" id="winL"></p></div>
+        <div class="tp" id="tpR"><p class="tp-score">右の人 <b id="resR">0</b>点</p><p class="tp-win" id="winR"></p></div>
+        <p class="two-draw" id="twoDraw"></p>
+      </div>
       <p class="boss-result" id="bossResult" hidden></p>
       <p class="ghost-result" id="ghostResult" hidden></p>
       <dl class="r-stats" id="rStats">

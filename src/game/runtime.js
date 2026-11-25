@@ -9,6 +9,7 @@ import { createAttacks } from './attacks.js';
 import { bossHpPercent, createBoss, damageBoss, damageBossFlat, reflectDamageBoss, shouldSpawnBoss, updateBoss, updateBossShots } from './boss.js';
 import { createGhostSample, ghostResultText, hasAnyHand, normalizeGhostPoint, packGhost, sampleGhost, unpackGhost } from './ghost.js';
 import { addGauge, classifyHandShape, consumeFist, createGestureState, shotInsideShield, tryActivateShield, updateHold, updateShieldTimers } from './gesture.js';
+import { creditBossResult, makeTwoEntry, playerIndexForX as sideOfX, pruneTwoScores, removeTodayTwoScores, selectTwoPlayerHands, twoBoardRows, twoPlayerVerdict, validTwoEntries } from './two.js';
 
 
 // ============================================================
@@ -57,8 +58,14 @@ const S = {
   boss: qs.has('boss') ? qs.get('boss') !== '0' : store.get('boss', true) !== false,
   ghost: qs.has('ghost') ? qs.get('ghost') !== '0' : store.get('ghostEnabled', true) !== false,
   gesture: qs.has('gesture') ? qs.get('gesture') !== '0' : store.get('gesture', true) !== false,
+  two: store.get('two', false) === true,   // 2人同時プレイ（AIハンドのときだけ）。URLオプションはなし
 };
+if (S.mode !== 'ai') S.two = false;
+let soloTime = S.time;   // 2人プレイ中は60びょうに固定するので、1人用の選択を覚えておく
+if (S.two) S.time = TUNING.two.duration;
 const diffCfg = () => TUNING.difficulty[S.diff];
+const AI_HANDS_SOLO = 3;   // 1人プレイのときにAIへ渡す手の数（2人プレイは TUNING.two.maxHands）
+const aiHandCount = () => S.two ? TUNING.two.maxHands : AI_HANDS_SOLO;
 
 // ---- 画像（assets フォルダにあれば、絵のかわりに使う）----
 const SPR = {};
@@ -139,10 +146,18 @@ const Motion = createMotion({ width: W, height: H, lerp, getContext: () => ctx }
 const HAND_LINKS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
 const withTimeout = (p, ms, label) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + label)), ms))]);
 const AI = {
-  lm: null, p: null, hands: [], prev: [], valid: 0, lastVT: -1, errs: 0, ms: 0, info: '', slowShown: false, lastErr: null,
-  ensure() {
-    if (this.lm) return Promise.resolve(this.lm);
-    if (!this.p) this.p = loadLandmarker().then(lm => { this.lm = lm; return lm; }, e => { this.p = null; this.lastErr = e; throw e; });
+  lm: null, p: null, numHands: 0, pHands: 0, hands: [], prev: [], valid: 0, lastVT: -1, errs: 0, ms: 0, info: '', slowShown: false, lastErr: null,
+  // numHands がちがう設定で作ってあったら、作り直す（1人 ⇔ 2人 を切りかえたとき）
+  ensure(numHands) {
+    if (this.lm && this.numHands === numHands) return Promise.resolve(this.lm);
+    if (this.lm) { try { this.lm.close(); } catch (e) { /* 何もしない */ } this.lm = null; this.p = null; }
+    if (!this.p || this.pHands !== numHands) {
+      const p = loadLandmarker(numHands).then(lm => {
+        if (this.p !== p) { try { lm.close(); } catch (e) { /* 何もしない */ } throw new Error('superseded'); }
+        this.lm = lm; this.numHands = numHands; return lm;
+      }, e => { if (this.p === p) this.p = null; this.lastErr = e; throw e; });
+      this.p = p; this.pHands = numHands;
+    }
     return this.p;
   },
 };
@@ -165,7 +180,7 @@ async function fetchBytes(url, timeout, keep) {
     const out = new Uint8Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out;
   } finally { clearTimeout(to); }
 }
-async function loadLandmarker() {
+async function loadLandmarker(numHands) {
   const kits = [];
   if (window.FINGER_SLASH_KIT) kits.push(window.FINGER_SLASH_KIT);   // 学校のサーバー等に自前で置く場合の差し替え口
   kits.push({ name: 'local', bundle: '/vendor/vision_bundle.mjs', wasm: '/vendor/wasm', models: ['/vendor/hand_landmarker.task'], timeout: 15000 });
@@ -187,7 +202,7 @@ async function loadLandmarker() {
         let lm;
         try {
           lm = await withTimeout(mod.HandLandmarker.createFromOptions(fileset, {
-            baseOptions: { modelAssetBuffer: model.slice(), delegate }, runningMode: 'VIDEO', numHands: 3,
+            baseOptions: { modelAssetBuffer: model.slice(), delegate }, runningMode: 'VIDEO', numHands,
             minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
           }), kit.timeout, 'init');
         } catch (e) { lastErr = e; continue; }
@@ -232,6 +247,13 @@ function aiStep(t, dt) {
   const all = (res && res.landmarks) ? res.landmarks : [], minPx = S.booth ? TUNING.boothMinHandPx : 0;
   AI.hands = all.map(h => { const pts = h.map(l => mapNorm(l.x, l.y)); return { lm: h, pts, raw: pts, size: Math.hypot(pts[0].x - pts[9].x, pts[0].y - pts[9].y), ok: false }; });
   predictHands(t, dt * every);
+  if (S.two) {   // 2人: 左右それぞれ、いちばん大きい手を1つずつ（真ん中の手は使わない）
+    const picked = selectTwoPlayerHands(AI.hands, { width: W, minPx, centerDeadZone: TUNING.two.centerDeadZone });
+    for (const h of picked) if (h) { h.ok = true; h.shape = S.gesture ? classifyHandShape(h.raw, TUNING.gesture) : 'none'; }
+    AI.valid = picked.filter(Boolean).length;
+    assignTwoPlayerHands(picked, t);
+    return;
+  }
   const valid = AI.hands.filter(h => h.size >= minPx).sort((a, b) => b.size - a.size).slice(0, 2);
   for (const h of valid) { h.ok = true; h.shape = S.gesture ? classifyHandShape(h.raw, TUNING.gesture) : 'none'; }
   AI.valid = valid.length;
@@ -289,6 +311,17 @@ function assignHands(hands, t) {
     ptrMove(p, q.x, q.y, t, 1);
   });
 }
+// 2人プレイ: picked = [左の手 or null, 右の手 or null]。ptrs[0] は いつも左の人、ptrs[1] は いつも右の人
+function assignTwoPlayerHands(picked, t) {
+  picked.forEach((hand, pi) => {
+    if (!hand) return;   // 見えない側は、miss がたまって自然に消える
+    const p = ptrs[pi], x = clamp(hand.pts[8].x, 0, W), y = clamp(hand.pts[8].y, 0, H);
+    p.shape = hand.shape || 'none'; p.palm = hand.pts[9];
+    if (p.shape === 'fist') { p.miss = 0; return; }   // グーの間は、誤って斬らないように位置を更新しない
+    const bd = p.active ? Math.hypot(x - p.x, y - p.y) : 0;
+    ptrMove(p, x, y, t, p.active ? clamp(TUNING.ai.smoothMin + bd / TUNING.ai.smoothDist, TUNING.ai.smoothMin, TUNING.ai.smoothMax) : 1);
+  });
+}
 function segDist(ax, ay, bx, by, px, py) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy; let t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0; t = clamp(t, 0, 1);
   return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
@@ -327,6 +360,7 @@ for (const n of ['pointerup', 'pointercancel', 'pointerleave']) stage.addEventLi
 let state = 'menu', runMode = 'mouse', flowId = 0, skipResolve = null, frameCount = 0;
 let monsters = [], fx = [], deco = [];
 let score = 0, shown = 0, combo = 0, maxCombo = 0, comboT = 0, kills = 0, bombs = 0, feverT = 0, timeLeft = 30, elapsed = 0, spawnT = 0, starCool = 0;
+let score2 = 0, shown2 = 0, combo2 = 0, maxCombo2 = 0, comboT2 = 0, kills2 = 0, bombs2 = 0;   // 2人プレイの右の人（左の人は上の score などを使う）
 let shake = 0, flashRed = 0, hitStop = 0, gridPhase = 0, readyT = 0, readyLock = 0, readyShown = '', starting = false;
 let cdT = 0, cdStage = -1, finT = 0, finWiping = false, hintT = 0, lastShown = false, lastSec = 99;
 let entry = null, entryDefault = '', lastAt = 0, autoT = 0, autoMsg = '', resultSeq = 0, resultArmed = false;
@@ -335,6 +369,20 @@ let shots = [], shotT = 0, reflects = 0, shotHits = 0, cracks = [], attackHinted
 let boss = null, bossAppeared = false, bossDefeated = false;
 let previousGhost = null, ghostSamples = [], ghostLastSampleT = -Infinity;
 let gestureStates = [createGestureState()], gestureFlashT = 0, gestureShakeT = 0;
+// ---- プレイヤー番号（pi）: 0 = 1人プレイ / 2人プレイの左の人、1 = 2人プレイの右の人 ----
+const playerIndexForPtr = p => S.two && p === ptrs[1] ? 1 : 0;
+const playerIndexForX = x => sideOfX(x, W, S.two);
+const playerPtrs = pi => S.two ? [ptrs[pi]] : ptrs;
+const scoreOf = pi => pi ? score2 : score;
+function setScore(pi, v) { if (pi) score2 = v; else score = v; }
+function addScore(pi, v) { setScore(pi, scoreOf(pi) + v); }
+const comboOf = pi => pi ? combo2 : combo;
+function resetCombo(pi) { if (pi) { combo2 = 0; comboT2 = 0; } else { combo = 0; comboT = 0; } }
+const maxComboOf = pi => pi ? maxCombo2 : maxCombo;
+const killsOf = pi => pi ? kills2 : kills;
+function addKill(pi) { if (pi) kills2++; else kills++; }
+const bombsOf = pi => pi ? bombs2 : bombs;
+function addBomb(pi) { if (pi) bombs2++; else bombs++; }
 const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT });
 const effectState = { get fx() { return fx; }, set fx(value) { fx = value; } };
 const { burst, ring, addText, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
@@ -351,12 +399,6 @@ const attackState = {
   set reflects(value) { reflects = value; },
   get shotHits() { return shotHits; },
   set shotHits(value) { shotHits = value; },
-  get combo() { return combo; },
-  set combo(value) { combo = value; },
-  get comboT() { return comboT; },
-  set comboT(value) { comboT = value; },
-  get score() { return score; },
-  set score(value) { score = value; },
   get shake() { return shake; },
   set shake(value) { shake = value; },
   get flashRed() { return flashRed; },
@@ -370,6 +412,7 @@ const attackState = {
 };
 const { updateAttacks, launchShot, reflectShot } = createAttacks({
   TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText,
+  addScore, resetCombo, playerIndexForPtr, playerIndexForX,
   isBossActive: () => !!boss && boss.hp > 0,
   getBossPos: () => boss ? { x: boss.x, y: boss.y } : null,
   onBossReflectHit: s => {
@@ -377,7 +420,7 @@ const { updateAttacks, launchShot, reflectShot } = createAttacks({
     if (Math.hypot(s.x - boss.x, s.y - boss.y) > TUNING.boss.radius + s.r) return false;
     const result = reflectDamageBoss(boss, TUNING.boss);
     if (!result.applied) return false;
-    applyBossDamageResult(result, `-${TUNING.boss.reflectDamage}`);
+    applyBossDamageResult(result, `-${TUNING.boss.reflectDamage}`, s.reflectedByPi ?? 0);   // はね返した人のダメージ
     return true;
   },
 });
@@ -455,7 +498,7 @@ function updateMonster(m, dt) {
 }
 
 // ---- 当たり判定とスコア ----
-function multOf(c) { return comboMultiplier(c, feverT > 0); }
+function multOf(pi = 0) { return comboMultiplier(comboOf(pi), feverT > 0); }
 function maybeSpawnBoss() {
   const appearAt = TUNING.boss.appearAt[S.time] ?? TUNING.boss.appearAt[30];
   if (!shouldSpawnBoss(S.boss, bossAppeared, timeLeft, appearAt)) return;
@@ -467,12 +510,13 @@ function maybeSpawnBoss() {
   banner('キングがあらわれた！', 'warn band', 1800);
   Snd.alarm();
 }
-function applyBossDamageResult(result, label) {
+// pi: このダメージを与えた人。撃破ボーナスは、最後にダメージを与えた人に入る
+function applyBossDamageResult(result, label, pi = 0) {
   burst(boss.x, boss.y, TUNING.boss.color, 14, 260, .55);
   addText(boss.x, boss.y - TUNING.boss.radius, label, '#ffffff', 28);
   if (result.defeated) {
     bossDefeated = true;
-    score += result.bonus;
+    creditBossResult(result, pi, addScore);
     ring(boss.x, boss.y, TUNING.boss.color, TUNING.boss.radius * 2);
     banner('ボスをたおした！', 'call c5', 1700, `+${result.bonus}点`);
     Snd.big();
@@ -489,26 +533,29 @@ function updateBossAttacks() {
   if (action === 'launch') launchShot({ forceFrom: boss, windup: TUNING.boss.telegraph, radius: TUNING.boss.radius });
 }
 // ---- 手の技（グー・パー）----
-function gestureHandAt(shape) { return ptrs.find(p => p.active && p.shape === shape); }
+// 1人プレイは両手（ptrs全体）、2人プレイは自分の側の手だけから、手の形を見る
+function gestureHandAt(pi, shape) { return playerPtrs(pi).find(p => p.active && p.shape === shape); }
 function updateGesture(dt) {
   if (!S.gesture) return;
-  const g = gestureStates[0];
-  const isFist = runMode === 'mouse' ? mouseFistDown : !!gestureHandAt('fist');
-  const isOpen = runMode === 'mouse' ? mouseOpenDown : !!gestureHandAt('open');
-  updateHold(g.fist, isFist, dt, TUNING.gesture.graceMs);
-  updateHold(g.open, isOpen, dt, TUNING.gesture.graceMs);
-  updateShieldTimers(g, dt);
-  if (runMode === 'mouse') { g.shieldX = ptrs[0].palm.x; g.shieldY = ptrs[0].palm.y; }
-  else { const hand = gestureHandAt('open'); if (hand) { g.shieldX = hand.palm.x; g.shieldY = hand.palm.y; } }   // 手を見失っても、最後の位置に残る
-  if (consumeFist(g, TUNING.gesture)) triggerFistBurst();
-  if (tryActivateShield(g, TUNING.gesture)) { Snd.select(); burst(g.shieldX, g.shieldY, '#4FC3F7', 18, 240, .5); }
+  for (let pi = 0; pi < gestureStates.length; pi++) {
+    const g = gestureStates[pi];
+    const isFist = runMode === 'mouse' ? mouseFistDown : !!gestureHandAt(pi, 'fist');
+    const isOpen = runMode === 'mouse' ? mouseOpenDown : !!gestureHandAt(pi, 'open');
+    updateHold(g.fist, isFist, dt, TUNING.gesture.graceMs);
+    updateHold(g.open, isOpen, dt, TUNING.gesture.graceMs);
+    updateShieldTimers(g, dt);
+    if (runMode === 'mouse') { g.shieldX = ptrs[0].palm.x; g.shieldY = ptrs[0].palm.y; }
+    else { const hand = gestureHandAt(pi, 'open'); if (hand) { g.shieldX = hand.palm.x; g.shieldY = hand.palm.y; } }   // 手を見失っても、最後の位置に残る
+    if (consumeFist(g, TUNING.gesture)) triggerFistBurst(pi);
+    if (tryActivateShield(g, TUNING.gesture)) { Snd.select(); burst(g.shieldX, g.shieldY, '#4FC3F7', 18, 240, .5); }
+  }
 }
-function triggerFistBurst() {
-  const mult = multOf(combo);   // コンボ倍率はかかるが、コンボ数は増やさない
+function triggerFistBurst(pi = 0) {
+  const mult = multOf(pi);   // コンボ倍率はかかるが、コンボ数は増やさない
   for (const m of monsters) {
     if (m.dead) continue;
     if (!MON[m.type].bad) {
-      const pts = MON[m.type].pts * mult; score += pts; kills++;
+      const pts = MON[m.type].pts * mult; addScore(pi, pts); addKill(pi);
       burst(m.x, m.y, MON[m.type].color, 12, 260, .55); addText(m.x, m.y - 8, `+${pts}`, '#ffe66b', 24);
     }
     m.dead = true;
@@ -516,7 +563,7 @@ function triggerFistBurst() {
   monsters = monsters.filter(m => !m.dead);
   if (boss && boss.hp > 0) {
     const result = damageBossFlat(boss, TUNING.gesture.fistBossDamage, TUNING.boss);
-    if (result.applied) applyBossDamageResult(result, `-${TUNING.gesture.fistBossDamage}`);
+    if (result.applied) applyBossDamageResult(result, `-${TUNING.gesture.fistBossDamage}`, pi);
   }
   for (const s of shots) s.gone = true;   // 飛んでくる火の玉をすべて消す（はね返し扱いにしない）
   shots = shots.filter(s => !s.gone);
@@ -526,14 +573,15 @@ function triggerFistBurst() {
 function testHits(dt = 0) {
   if (boss && boss.hp > 0) {
     for (const p of ptrs) {
-      if (!p.active) continue;
+      if (!p.active || boss.hp <= 0) continue;
       const speed = dt > 0 ? Math.hypot(p.x - p.ox, p.y - p.oy) / dt : 0;
       if (speed < TUNING.boss.minSlashSpeed || segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) > TUNING.boss.radius) continue;
       const result = damageBoss(boss, speed, TUNING.boss, p === ptrs[0] ? 'p1' : 'p2');
       if (!result.applied) continue;
-      if (S.gesture) addGauge(gestureStates[0], TUNING.gesture.gaugeBossHit);
-      applyBossDamageResult(result, `-${TUNING.boss.slashDamage}`);
-      break;
+      const pi = playerIndexForPtr(p);
+      if (S.gesture) addGauge(gestureStates[pi], TUNING.gesture.gaugeBossHit);
+      applyBossDamageResult(result, `-${TUNING.boss.slashDamage}`, pi);
+      if (!S.two) break;   // 2人プレイは、同じコマに2人とも斬れる（クールダウンは人ごと）
     }
   }
   const pad = diffCfg().pad;
@@ -559,33 +607,36 @@ function testHits(dt = 0) {
 function onHit(m, p) {
   const T = MON[m.type];
   let dx = p ? p.x - p.ox : rnd(-1, 1), dy = p ? p.y - p.oy : rnd(-1, 1); const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
-  const ang = Math.atan2(dy, dx);
-  if (T.bad) { bombHit(m); return; }
+  const ang = Math.atan2(dy, dx), pi = playerIndexForPtr(p);   // 斬った人が、点数とゲージを得る
+  if (T.bad) { bombHit(m, pi); return; }
   m.hp--; m.flash = .15; m.cool = .3;
   addSlash(m.x, m.y, ang, m.r);
   if (m.hp > 0) { burst(m.x, m.y, T.color, 8, 220, .5); Snd.hurt(); shake = Math.max(shake, .25); addText(m.x, m.y - m.r - 8, `あと${m.hp}`, '#fff', 20); return; }
-  kill(m, ang);
+  kill(m, pi);
 }
-function kill(m) {
-  const T = MON[m.type]; m.dead = true; kills++;
-  bumpCombo();
-  if (S.gesture) addGauge(gestureStates[0], TUNING.gesture.gaugeEnemy);
+function kill(m, pi = 0) {
+  const T = MON[m.type]; m.dead = true; addKill(pi);
+  bumpCombo(pi);
+  if (S.gesture) addGauge(gestureStates[pi], TUNING.gesture.gaugeEnemy);
   if (T.fever) {
     feverT = Math.min(TUNING.feverSeconds * 1.5, feverT + TUNING.feverSeconds);
     banner('FEVER TIME!!', 'fever band', 1500, `${TUNING.feverSeconds}びょう間 とくてん2ばい`); ring(m.x, m.y, T.color, 160); Snd.star();
   }
-  const mult = multOf(combo), pts = T.pts * mult; score += pts;
+  const mult = multOf(pi), pts = T.pts * mult; addScore(pi, pts);
   burst(m.x, m.y, T.color, m.type === 'golem' ? 30 : 16, m.type === 'golem' ? 380 : 280, .75); ring(m.x, m.y, T.color, m.r * 2.2);
   addText(m.x, m.y - 8, `+${pts}`, mult > 1 ? '#ffe66b' : '#a6ff3d', 26 + Math.min(12, mult * 2));
-  if (m.type === 'golem') { Snd.big(); shake = Math.max(shake, .55); hitStop = .07; } else Snd.hit(combo);
+  if (m.type === 'golem') { Snd.big(); shake = Math.max(shake, .55); hitStop = .07; } else Snd.hit(comboOf(pi));
 }
-function bumpCombo() {
-  combo = (comboT > 0 ? combo : 0) + 1; comboT = TUNING.comboWindow; maxCombo = Math.max(maxCombo, combo);
-  const call = CALLS.find(c => c[0] === combo);
+// pi: コンボを伸ばす人（コンボ数ではなく、プレイヤー番号）
+function bumpCombo(pi = 0) {
+  let c;
+  if (pi) { c = combo2 = (comboT2 > 0 ? combo2 : 0) + 1; comboT2 = TUNING.comboWindow; maxCombo2 = Math.max(maxCombo2, c); }
+  else { c = combo = (comboT > 0 ? combo : 0) + 1; comboT = TUNING.comboWindow; maxCombo = Math.max(maxCombo, c); }
+  const call = CALLS.find(k => k[0] === c);
   if (call) { banner(call[1], 'call ' + call[2], 950); Snd.chime(CALLS.indexOf(call)); }
 }
-function bombHit(m) {
-  m.dead = true; bombs++; combo = 0; comboT = 0; timeLeft = Math.max(0, timeLeft - TUNING.bombPenaltySeconds); score = Math.max(0, score - 50);
+function bombHit(m, pi = 0) {
+  m.dead = true; addBomb(pi); resetCombo(pi); timeLeft = Math.max(0, timeLeft - TUNING.bombPenaltySeconds); setScore(pi, Math.max(0, scoreOf(pi) - 50));
   shake = 1; flashRed = 1; burst(m.x, m.y, '#ff4d5e', 30, 420, .9); burst(m.x, m.y, '#ffd24d', 18, 300, .7); ring(m.x, m.y, '#ff4d5e', 170);
   banner('BOMB!', 'bomb', 900, `−${TUNING.bombPenaltySeconds}びょう`); Snd.bomb();
 }
@@ -602,10 +653,11 @@ async function startFlow() {
   if (my !== flowId) { Cam.stop(); return; }
   if (runMode === 'ai') {
     showLoading('AIを準備しています…', 'はじめては少し時間がかかります（目安: 10〜40びょう）。次からは早くなります。', true, true);
-    const res = await Promise.race([AI.ensure().then(() => 'ok', () => 'fail'), new Promise(r => { skipResolve = () => r('skip'); })]);
+    const res = await Promise.race([AI.ensure(aiHandCount()).then(() => 'ok', () => 'fail'), new Promise(r => { skipResolve = () => r('skip'); })]);
     skipResolve = null; if (my !== flowId) { Cam.stop(); return; }
     if (res !== 'ok') { runMode = 'motion'; toast(res === 'skip' ? 'モーションモードで始めます' : 'AIを読みこめなかったので、モーションモードで始めます。ネットの接続を確認してね。', 7000); }
   }
+  if (runMode !== 'ai' && S.two) { S.two = false; syncTwoUI(); }   // 2人プレイはAIハンドのときだけ。それ以外になったら1人にもどす
   if (runMode === 'motion') Motion.reset();
   AI.hands = []; AI.valid = 0; AI.lastVT = -1; for (const p of ptrs) { p.active = false; p.trail.length = 0; }
   enterReady(false);
@@ -654,13 +706,15 @@ function beginGame() {
 }
 function resetRound() {
   monsters = []; fx = []; score = 0; shown = 0; combo = 0; maxCombo = 0; comboT = 0; kills = 0; bombs = 0; feverT = 0; starCool = 0;
+  score2 = 0; shown2 = 0; combo2 = 0; maxCombo2 = 0; comboT2 = 0; kills2 = 0; bombs2 = 0;
   timeLeft = S.time; elapsed = 0; spawnT = .6; shake = 0; flashRed = 0; hitStop = 0; lastShown = false; lastSec = 99;
   shots = []; cracks = []; shotT = TUNING.attacks.startAfter; reflects = 0; shotHits = 0; attackHinted = false;
   boss = null; bossAppeared = false; bossDefeated = false;
-  previousGhost = S.ghost ? unpackGhost(store.get('ghost_' + S.time, null)) : null;
+  previousGhost = ghostOn() ? unpackGhost(store.get('ghost_' + S.time, null)) : null;
   ghostSamples = []; ghostLastSampleT = -Infinity;
-  gestureStates = [createGestureState()]; gestureFlashT = 0; gestureShakeT = 0;
+  gestureStates = S.two ? [createGestureState(), createGestureState()] : [createGestureState()]; gestureFlashT = 0; gestureShakeT = 0;
 }
+const ghostOn = () => S.ghost && !S.two;   // 2人プレイでは、ゴーストは使わない
 function currentGhostPoints() {
   return ptrs.filter(p => p.active).map(p => normalizeGhostPoint(p.x, p.y, W, H));
 }
@@ -668,7 +722,7 @@ function pushGhostSample() {
   ghostSamples.push(createGhostSample(elapsed, currentGhostPoints(), score));
 }
 function recordGhostSamples() {
-  if (!S.ghost) return;
+  if (!ghostOn()) return;
   if (elapsed - ghostLastSampleT < TUNING.ghost.interval) return;
   ghostLastSampleT = elapsed;
   pushGhostSample();
@@ -691,6 +745,7 @@ function updatePlay(dt) {
   elapsed += dt; hintT += dt; timeLeft -= dt;
   if (feverT > 0) feverT = Math.max(0, feverT - dt);
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
+  if (comboT2 > 0) { comboT2 -= dt; if (comboT2 <= 0) combo2 = 0; }
   maybeSpawnBoss();
   updateBoss(boss, dt, TUNING.boss, W);
   updateBossAttacks();
@@ -706,7 +761,7 @@ function updatePlay(dt) {
   if (timeLeft <= 0) { timeLeft = 0; finishRound(); }
 }
 function finishRound() {
-  if (S.ghost) pushGhostSample();   // ラウンド終了時点の記録を最後に1つ足す
+  if (ghostOn()) pushGhostSample();   // ラウンド終了時点の記録を最後に1つ足す
   setState('finish'); finT = 0; finWiping = false; Music.stop(); banner('FINISH!', 'finish', 1600); Snd.whistle();
 }
 function updateFinish(dt) {
@@ -731,10 +786,16 @@ function saveScores(list) {   // 今日の記録はぜんぶ、ほかの日は�
   const td = list.filter(e => dayKey(e.at) === k).slice(-2950), old = list.filter(e => dayKey(e.at) !== k).sort((a, b) => b.s - a.s).slice(0, 50);
   store.set('scores', td.concat(old));
 }
+// 2人プレイ用のランキング（1人用の 30/60びょう のボードとは別のキー）。1件 = { total, l, r, ts }
+function allTwoScores() { return validTwoEntries(store.get('scoresTwo', [])); }
+function todayTwoScores() { const k = dayKey(Date.now()); return allTwoScores().filter(e => dayKey(e.ts) === k).sort((a, b) => b.total - a.total); }
+function saveTwoScores(list) { store.set('scoresTwo', pruneTwoScores(list, dayKey(Date.now()), dayKey)); }
 // ---- けっか画面（順番に出していく）----
 function endRound() {
   Music.stop(); feverT = 0;
-  if (S.ghost && ghostSamples.length && hasAnyHand(ghostSamples)) {
+  $('#result').classList.toggle('two', S.two);
+  if (S.two) { endRoundTwo(); return; }
+  if (ghostOn() && ghostSamples.length && hasAnyHand(ghostSamples)) {
     try { store.set('ghost_' + S.time, packGhost(ghostSamples)); } catch (e) { /* 保存できなくても遊べるようにする */ }
   }
   const rk = rankOf(score), em = $('#emblem'); $('#rankLetter').textContent = rk; em.dataset.rank = rk;
@@ -743,7 +804,7 @@ function endRound() {
   const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
   $('#bossResult').hidden = !bossRemaining;
   if (bossRemaining) $('#bossResult').textContent = `ボスのHP 残り${bossHpPercent(boss)}%`;
-  const ghostResult = S.ghost ? ghostResultText(score, previousGhost) : '';
+  const ghostResult = ghostOn() ? ghostResultText(score, previousGhost) : '';
   $('#ghostResult').hidden = !ghostResult;
   if (ghostResult) $('#ghostResult').textContent = ghostResult;
   $('#secret').innerHTML = '<b>AIのひみつ</b>　' + pick(SECRETS);
@@ -776,12 +837,40 @@ function endRound() {
   at(2600, () => { $('#todayRank').classList.add('show'); if (best) { $('#newRec').classList.add('show'); Snd.fanfare(); confetti(120); } });
   at(2900, () => { $('#rFoot').classList.add('show'); $('#secret').classList.add('show'); $('#autoWrap').classList.add('show'); resultArmed = true; });
 }
-function countUp(sid, target, ms) {
-  const el = $('#resScore'), t0 = performance.now(); let lastTick = 0;
+// 2人プレイのけっか: 「左の人 ◯点」「右の人 ◯点」を並べ、多いほうに「勝ち！」（同点は「ひきわけ！」）。名前入力は出さない
+function endRoundTwo() {
+  const l = score, r = score2, verdict = twoPlayerVerdict(l, r);
+  const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
+  $('#bossResult').hidden = !bossRemaining;
+  if (bossRemaining) $('#bossResult').textContent = `ボスのHP 残り${bossHpPercent(boss)}%`;
+  $('#ghostResult').hidden = true;
+  $('#resL').textContent = '0'; $('#resR').textContent = '0';
+  $('#winL').textContent = verdict === 'l' ? '勝ち！' : ''; $('#winR').textContent = verdict === 'r' ? '勝ち！' : '';
+  $('#twoDraw').textContent = verdict === 'draw' ? 'ひきわけ！' : '';
+  $('#tpL').classList.toggle('win', verdict === 'l'); $('#tpR').classList.toggle('win', verdict === 'r');
+  const e = makeTwoEntry(l, r, Date.now()); entry = null; lastAt = e.ts;
+  const list = allTwoScores(); list.push(e); saveTwoScores(list);
+  $('#again').querySelector('span').textContent = S.booth ? 'つぎの人へ' : 'もういっかい';
+  for (const el of document.querySelectorAll('#result .rv, #emblem, #newRec, #twoResult .tp-win, #twoDraw')) el.classList.remove('show');
+  autoT = TUNING.boothResultSeconds; autoMsg = ''; resultArmed = false; $('#autoNext').textContent = ''; $('#autoBar').style.width = '100%';
+  setState('result'); renderBoard();
+  const sid = ++resultSeq, res = $('#result');
+  const at = (ms, f) => setTimeout(() => { if (sid === resultSeq && state === 'result') f(); }, reduceMotion ? 0 : ms);
+  at(60, () => { $('#rMain').classList.add('show'); Snd.select(); });
+  at(350, () => { countUp(sid, l, 900, $('#resL')); countUp(sid, r, 900, $('#resR'), false); });
+  at(1500, () => {
+    for (const el of document.querySelectorAll('#twoResult .tp-win, #twoDraw')) el.classList.add('show');
+    Snd.stamp(); res.classList.remove('shake'); void res.offsetWidth; if (!reduceMotion) res.classList.add('shake');
+    if (verdict !== 'draw') { Snd.fanfare(); confetti(120); }
+  });
+  at(2100, () => { $('#rFoot').classList.add('show'); $('#autoWrap').classList.add('show'); resultArmed = true; });
+}
+function countUp(sid, target, ms, el = $('#resScore'), sound = true) {
+  const t0 = performance.now(); let lastTick = 0;
   const f = now => {
     if (sid !== resultSeq) return; const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
     el.textContent = String(Math.round(target * e));
-    if (k < 1) { if (now - lastTick > 70) { lastTick = now; Snd.tick(); } requestAnimationFrame(f); }
+    if (k < 1) { if (sound && now - lastTick > 70) { lastTick = now; Snd.tick(); } requestAnimationFrame(f); }
   };
   requestAnimationFrame(f);
 }
@@ -811,12 +900,16 @@ function fillBoard(ol, list, emptyText) {
   });
 }
 function renderBoard() {
-  const td = todayScores(), list = S.booth ? td : allScores().sort((a, b) => b.s - a.s);
+  const td1 = todayScores(), tdTwo = todayTwoScores();
+  // 2人プレイを選んでいるときは、2人専用のボード（合計点、名前の欄は「左◯／右◯」）を出す
+  const td = S.two ? twoBoardRows(tdTwo) : td1;
+  const list = S.booth ? td : S.two ? twoBoardRows(allTwoScores().sort((a, b) => b.total - a.total)) : allScores().sort((a, b) => b.s - a.s);
   $('#boardTitle').textContent = S.booth ? "TODAY'S BEST" : 'HIGH SCORE';
   fillBoard($('#board'), list.slice(0, 8), 'まだ記録がありません');
   $('#howAtk').hidden = !S.attack;
   fillBoard($('#board2'), td.slice(0, 10), 'まだ記録がありません。1番のりを目指そう！');
-  $('#todayCount').innerHTML = `本日の挑戦者 <b>${td.length}</b>人`; $('#staffCount').textContent = `今日のプレイ数：${td.length}回`;
+  const plays = td1.length + tdTwo.length, players = td1.length + tdTwo.length * 2;   // 2人プレイは1回で2人
+  $('#todayCount').innerHTML = `本日の挑戦者 <b>${players}</b>人`; $('#staffCount').textContent = `今日のプレイ数：${plays}回`;
 }
 function toMenu() {
   flowId++; resultSeq++; starting = false; Music.stop(); Cam.stop(); Motion.reset(); AI.hands = []; AI.valid = 0; for (const p of ptrs) { p.active = false; p.trail.length = 0; }
@@ -832,19 +925,26 @@ function togglePause() {
 // ============================================================
 //  プレイ中の表示（HUD）… 値が変わったときだけ書きかえる
 // ============================================================
-const hud = { box: $('#hud'), score: $('#hScore'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), mode: $('#hMode'), hint: $('#hHint'), ghost: $('#hGhost'), ghostText: $('#hGhostText'), ghostBar: $('#hGhostBar') };
+const hud = { box: $('#hud'), score: $('#hScore'), lbl: $('#hLbl'), score2: $('#hScore2'), pc0: $('#hPc0'), pc1: $('#hPc1'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), mode: $('#hMode'), hint: $('#hHint'), ghost: $('#hGhost'), ghostText: $('#hGhostText'), ghostBar: $('#hGhostBar') };
 const hc = {};
 function setIf(key, v, fn) { if (hc[key] !== v) { hc[key] = v; fn(v); } }
 function updateHUD() {
   const on = state === 'countdown' || state === 'play' || state === 'paused' || state === 'finish';
   setIf('on', on, v => hud.box.classList.toggle('on', v)); if (!on) return;
   setIf('score', String(Math.round(shown)), v => { hud.score.textContent = v; });
+  setIf('two', S.two, v => { hud.box.classList.toggle('two', v); hud.lbl.textContent = v ? '左の人' : 'SCORE'; });
+  if (S.two) {   // 2人: 右の人の点数と、それぞれのコンボを、点数の箱の中に出す
+    setIf('score2', String(Math.round(shown2)), v => { hud.score2.textContent = v; });
+    const pc = pi => comboOf(pi) >= 2 ? `${comboOf(pi)} COMBO ×${multOf(pi)}` : '';
+    setIf('pc0', pc(0), v => { hud.pc0.textContent = v; });
+    setIf('pc1', pc(1), v => { hud.pc1.textContent = v; });
+  }
   setIf('time', String(Math.max(0, Math.ceil(timeLeft))), v => { hud.time.textContent = v; });
   setIf('ring', Math.round(clamp(timeLeft / S.time, 0, 1) * 400), v => { hud.ring.style.strokeDashoffset = String(HOLD_C * (1 - v / 400)); });
   setIf('low', timeLeft <= 10 && state === 'play', v => hud.timeBox.classList.toggle('low', v));
   setIf('con', combo >= 2, v => hud.combo.classList.toggle('on', v));
   setIf('cn', combo, v => { if (v >= 2) { hud.comboN.textContent = String(v); hud.comboN.classList.remove('pop'); void hud.comboN.offsetWidth; hud.comboN.classList.add('pop'); } });
-  setIf('mult', '×' + multOf(Math.max(1, combo)), v => { hud.mult.textContent = v; });
+  setIf('mult', '×' + comboMultiplier(Math.max(1, combo), feverT > 0), v => { hud.mult.textContent = v; });
   setIf('cbar', Math.round(clamp(comboT / TUNING.comboWindow, 0, 1) * 50), v => { hud.cbar.style.width = (v * 2) + '%'; });
   setIf('fon', feverT > 0, v => hud.fever.classList.toggle('on', v));
   setIf('fbar', Math.round(clamp(feverT / TUNING.feverSeconds, 0, 1) * 50), v => { hud.fbar.style.width = (v * 2) + '%'; });
@@ -852,7 +952,7 @@ function updateHUD() {
   const hint = runMode === 'mouse' ? 'マウスでモンスターにさわろう。ばくだんはさわらない！' : runMode === 'motion' ? '手を動かしてモンスターにふれよう。ばくだんはさけて！' : '人さし指でモンスターにさわろう。ばくだんはさけて！';
   setIf('hint', hint, v => { hud.hint.textContent = v; });
   setIf('hop', state === 'play' && hintT < 6 ? 1 : 0, v => { hud.hint.style.opacity = String(v); });
-  const hasGhost = S.ghost && previousGhost && previousGhost.length > 0;
+  const hasGhost = ghostOn() && previousGhost && previousGhost.length > 0;
   setIf('ghost-on', !!hasGhost, v => hud.ghost.classList.toggle('on', v));
   if (hasGhost) {
     const previousScore = Math.round(sampleGhost(previousGhost, elapsed).s);
@@ -877,6 +977,21 @@ bindRadios('attack', 'attack', v => v === '1', v => v ? '1' : '0');
 bindRadios('boss', 'boss', v => v === '1', v => v ? '1' : '0');
 bindRadios('ghost', 'ghost', v => v === '1', v => v ? '1' : '0', 'ghostEnabled');
 bindRadios('gesture', 'gesture', v => v === '1', v => v ? '1' : '0');
+bindRadios('two', 'two', v => v === '1', v => v ? '1' : '0');
+document.querySelectorAll('input[name="time"]').forEach(el => el.addEventListener('change', () => { soloTime = S.time; }));
+document.querySelectorAll('input[name="mode"], input[name="two"]').forEach(el => el.addEventListener('change', syncTwoUI));
+// 人数: 2人はAIハンドのときだけ。2人のあいだは TIME を60びょうに固定して選べなくする
+function syncTwoUI() {
+  const ai = S.mode === 'ai';
+  if (!ai) S.two = false;   // モードがAIハンドでなくなったら、自動で1人にもどす
+  store.set('two', S.two);
+  S.time = S.two ? TUNING.two.duration : soloTime;
+  document.querySelectorAll('input[name="two"]').forEach(el => { el.checked = (S.two ? '1' : '0') === el.value; if (el.value === '1') el.disabled = !ai; });
+  $('#twoNote').hidden = ai;
+  document.querySelectorAll('input[name="time"]').forEach(el => { el.disabled = S.two; el.checked = String(S.time) === el.value; });
+  renderBoard();
+}
+syncTwoUI();
 $('#embedNote').hidden = !embedded;
 function goFull(on) {
   try {
@@ -909,7 +1024,7 @@ $('#resetToday').addEventListener('click', () => {
   const b = $('#resetToday');
   if (Date.now() - resetArm > 4000) { resetArm = Date.now(); b.textContent = 'もう一度おすと消えます'; setTimeout(() => { if (Date.now() - resetArm >= 3900) b.textContent = '今日の記録をリセット'; }, 4000); return; }
   resetArm = 0; const k = dayKey(Date.now()); store.set('scores', allScores().filter(e => dayKey(e.at) !== k));
-  store.set('ghost_30', null); store.set('ghost_60', null); store.set('scoresTwo', null);
+  store.set('ghost_30', null); store.set('ghost_60', null); store.set('scoresTwo', removeTodayTwoScores(store.get('scoresTwo', []), k, dayKey));
   previousGhost = null; ghostSamples = []; ghostLastSampleT = -Infinity;
   b.textContent = '今日の記録をリセット'; lastAt = 0; renderBoard(); toast('今日の記録をリセットしました', 3000);
 });
@@ -1060,7 +1175,7 @@ function drawMonster(m, t, alpha = 1) {
   ctx.restore();
 }
 function drawGhostRace() {
-  if (!S.ghost || !previousGhost || !previousGhost.length) return;
+  if (!ghostOn() || !previousGhost || !previousGhost.length) return;
   if (elapsed > previousGhost[previousGhost.length - 1].t) return;   // 記録の最後を過ぎたら残像を消す
   const sample = sampleGhost(previousGhost, elapsed);
   if (!sample) return;
@@ -1281,7 +1396,16 @@ function drawGesturePlayerHud(g, cx, y) {
 }
 function drawGestureHud() {
   if (!S.gesture || !(state === 'play' || state === 'countdown' || state === 'paused')) return;
-  drawGesturePlayerHud(gestureStates[0], W / 2, H - 24);
+  if (S.two && gestureStates.length > 1) { drawGesturePlayerHud(gestureStates[0], W / 4, H - 24); drawGesturePlayerHud(gestureStates[1], W * 3 / 4, H - 24); }
+  else drawGesturePlayerHud(gestureStates[0], W / 2, H - 24);
+}
+// 2人プレイ: 画面のまん中に、左右の境目（どちらにも割り当てない不感帯）をうすく出す
+function drawTwoDivider() {
+  if (!S.two) return;
+  const dz = W * TUNING.two.centerDeadZone;
+  ctx.save(); ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.fillRect(W / 2 - dz / 2, 0, dz, H);
+  ctx.strokeStyle = 'rgba(255,255,255,.28)'; ctx.lineWidth = 2; ctx.setLineDash([10, 10]);
+  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke(); ctx.restore();
 }
 function render(t) {
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -1294,6 +1418,7 @@ function render(t) {
   else {
     if (state === 'ready') for (const m of deco) drawMonster(m, t, .22);
     if (runMode === 'motion' && Cam.ready && state !== 'result') Motion.draw(S.eye || state === 'ready' ? .95 : .5);
+    if (state !== 'result') drawTwoDivider();
     if (runMode === 'ai' && Cam.ready && (S.eye || state === 'ready' || state === 'countdown')) drawHands();
     if (state !== 'result') drawGhostRace();
     if (state !== 'result') { const fa = state === 'finish' ? clamp(1 - finT / 1.2, 0, 1) : 1; for (const m of monsters) drawMonster(m, t, fa); drawBoss(); for (const s of shots) drawShot(s, t, fa); }
@@ -1312,6 +1437,7 @@ function render(t) {
 function step(dt, t) {
   frameCount++;
   shown = lerp(shown, score, 1 - Math.pow(.0005, dt));
+  shown2 = lerp(shown2, score2, 1 - Math.pow(.0005, dt));
   gridPhase = (gridPhase + dt * (state === 'play' ? 1.6 : .35)) % 1;
   if (shake > 0) shake = Math.max(0, shake - dt * 2.5); if (flashRed > 0) flashRed = Math.max(0, flashRed - dt * 2.2);
   if (gestureFlashT > 0) gestureFlashT = Math.max(0, gestureFlashT - dt); if (gestureShakeT > 0) gestureShakeT = Math.max(0, gestureShakeT - dt);
@@ -1341,5 +1467,6 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti, get gestureStates() { return gestureStates; }, triggerFistBurst, updateGesture };
+window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti, get gestureStates() { return gestureStates; }, triggerFistBurst, updateGesture,
+  get two() { return S.two; }, get p2() { return { score: score2, combo: combo2, maxCombo: maxCombo2, kills: kills2, bombs: bombs2 }; }, playerIndexForPtr, playerIndexForX, scoreOf, maxComboOf, killsOf, bombsOf };
 if (qs.get('autostart') === '1') startFlow();
