@@ -6,6 +6,7 @@ import { createAudio } from '../audio/audio.js';
 import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
 import { createAdaptiveFrameSize, createHandTracker } from '../input/hand-tracker.js';
+import { createOneEuro2D } from '../input/one-euro.js';
 import { createAttacks } from './attacks.js';
 import { createBoss, damageBoss, shouldSpawnBoss, updateBoss } from './boss.js';
 import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
@@ -247,18 +248,26 @@ function aiStep(t, dt) {
   assignHands(valid.map(h => h.pts), sampleTime);
 }
 // 検出した手の位置は「少し前のコマ」のもの。手を動かしていると、その遅れのぶん点が実際の手からずれて見える。
-// 前回との差から速さを出し、遅れのぶんだけ先に進めた位置を使う（手を止めているときは何も変わらない）
+// 前回との差から速さを出し、遅れのぶんだけ先に進めた位置を使う。
+// ただしAIの検出位置は止めていても毎回数ピクセルゆれるので、遅いときは先読みしない（ゆれを何倍にも大きくしてしまうため）。
+// さらに21点それぞれを One Euro Filter でならして、止めているときの「ぷるぷる」を消す（画面の手の骨組みも、ゲームの点も同じ位置を使う）
 function predictHands(t, frameSec) {
-  const lag = Math.min(TUNING.ai.maxLead, (AI.ms + TUNING.ai.pipelineMs) / 1000 + frameSec * .5), prev = AI.prev, next = [];
+  const A = TUNING.ai, lag = Math.min(A.maxLead, (AI.ms + A.pipelineMs) / 1000 + frameSec * .5), prev = AI.prev, next = [], taken = new Set();
   for (const h of AI.hands) {
     const w = h.raw[0]; let best = null, bd = 1e9;
-    for (const q of prev) { const d = Math.hypot(q.pts[0].x - w.x, q.pts[0].y - w.y); if (d < bd) { bd = d; best = q; } }
-    const span = best ? t - best.t : 0;
-    if (best && bd < 220 && span > 0.004 && span < 0.25) {
-      const sc = Math.min(1, TUNING.ai.maxLeadPx / Math.max(1, Math.hypot(h.raw[8].x - best.pts[8].x, h.raw[8].y - best.pts[8].y) / span * lag));
-      h.pts = h.raw.map((p, i) => { const q = best.pts[i]; return { x: p.x + (p.x - q.x) / span * lag * sc, y: p.y + (p.y - q.y) / span * lag * sc }; });
+    for (const q of prev) { if (taken.has(q)) continue; const d = Math.hypot(q.pts[0].x - w.x, q.pts[0].y - w.y); if (d < bd) { bd = d; best = q; } }
+    const span = best ? t - best.t : 0, same = best && bd < 220 && span > 0.004 && span < 0.25;
+    if (same) taken.add(best);
+    const euro = same ? best.euro : h.raw.map(() => createOneEuro2D({ minCutoff: A.smoothCutoff, beta: A.smoothBeta }));
+    const smooth = h.raw.map((p, i) => euro[i].filter(p.x, p.y, t));
+    let sc = 0;
+    if (same) {
+      const speed = Math.hypot(h.raw[8].x - best.pts[8].x, h.raw[8].y - best.pts[8].y) / span;
+      const gate = clamp((speed - A.leadMinSpeed) / Math.max(1, A.leadFullSpeed - A.leadMinSpeed), 0, 1);
+      sc = gate * Math.min(1, A.maxLeadPx / Math.max(1, speed * lag));
     }
-    next.push({ pts: h.raw, t });
+    h.pts = smooth.map((p, i) => sc === 0 ? p : { x: p.x + (h.raw[i].x - best.pts[i].x) / span * lag * sc, y: p.y + (h.raw[i].y - best.pts[i].y) / span * lag * sc });
+    next.push({ pts: h.raw, t, euro });
   }
   AI.prev = next;
 }
@@ -293,8 +302,9 @@ function assignHands(hands, t) {
   for (const p of ptrs) {
     if (!p.active) continue; let bi = -1, bd = 1e9;
     tips.forEach((q, i) => { if (used.has(i)) return; const d = Math.hypot(q.x - p.x, q.y - p.y); if (d < bd) { bd = d; bi = i; } });
-    // 止めているときはよく平均して「ぷるぷる」を消し、速く動かしたときはほぼそのまま追いかけて遅れを出さない
-    if (bi >= 0 && bd < 260) { used.add(bi); ptrMove(p, tips[bi].x, tips[bi].y, t, clamp(TUNING.ai.smoothMin + bd / TUNING.ai.smoothDist, TUNING.ai.smoothMin, TUNING.ai.smoothMax)); }
+    // 止めているときはよくならして「ぷるぷる」を消し、速く動かしたときはほぼそのまま追いかけて遅れを出さない
+    // 指先の位置は predictHands でならし済みなので、そのまま使う
+    if (bi >= 0 && bd < 260) { used.add(bi); ptrMove(p, tips[bi].x, tips[bi].y, t, 1); }
   }
   tips.forEach((q, i) => { if (used.has(i)) return; const p = ptrs.find(pp => !pp.active); if (p) { ptrMove(p, q.x, q.y, t, 1); used.add(i); } });
 }
