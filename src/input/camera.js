@@ -30,8 +30,8 @@ export function createCamera({ video, width, height, onDisconnect }) {
         audio: false,
         video: {
           facingMode: 'user',
-          width: { ideal: 960 },
-          height: { ideal: 540 },
+          width: { ideal: 640 },
+          height: { ideal: 360 },
           frameRate: { ideal: 30 },
         },
       });

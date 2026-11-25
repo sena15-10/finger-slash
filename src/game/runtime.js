@@ -5,6 +5,7 @@ import { createEffects } from '../render/effects.js';
 import { createAudio } from '../audio/audio.js';
 import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
+import { createAdaptiveFrameSize, createHandTracker } from '../input/hand-tracker.js';
 import { createAttacks } from './attacks.js';
 import { createBoss, damageBoss, shouldSpawnBoss, updateBoss } from './boss.js';
 import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
@@ -135,15 +136,6 @@ function camMessage(e) {
 const Motion = createMotion({ width: W, height: H, lerp, getContext: () => ctx });
 
 const HAND_LINKS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
-const withTimeout = (p, ms, label) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + label)), ms))]);
-const AI = {
-  lm: null, p: null, hands: [], prev: [], valid: 0, lastVT: -1, errs: 0, ms: 0, info: '', slowShown: false, lastErr: null,
-  ensure() {
-    if (this.lm) return Promise.resolve(this.lm);
-    if (!this.p) this.p = loadLandmarker().then(lm => { this.lm = lm; return lm; }, e => { this.p = null; this.lastErr = e; throw e; });
-    return this.p;
-  },
-};
 const EXPECT_MB = 22;   // 進み具合の目安（wasm 約15MB + モデル 約8MB）
 let dlBytes = 0;
 function onBytes(n) {
@@ -151,86 +143,108 @@ function onBytes(n) {
   const mb = dlBytes / 1048576; $('#loadBar').style.width = Math.min(96, mb / EXPECT_MB * 100) + '%';
   $('#loadSub').textContent = `AIのデータをダウンロード中… ${mb.toFixed(1)} / 約${EXPECT_MB} MB（はじめだけです。次からは早くなります）`;
 }
-// ファイルをダウンロードしながら、進み具合を知らせる（keep=false なら、キャッシュに入れるだけで捨てる）
-async function fetchBytes(url, timeout, keep) {
-  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), timeout);
-  try {
-    const res = await fetch(url, { signal: ctl.signal }); if (!res.ok) throw new Error('http ' + res.status);
-    if (!res.body || !res.body.getReader) { const b = new Uint8Array(await res.arrayBuffer()); onBytes(b.length); return keep ? b : null; }
-    const rd = res.body.getReader(), parts = []; let n = 0;
-    for (;;) { const { done, value } = await rd.read(); if (done) break; n += value.length; onBytes(value.length); if (keep) parts.push(value); }
-    if (!keep) return null;
-    const out = new Uint8Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out;
-  } finally { clearTimeout(to); }
-}
-async function loadLandmarker() {
-  const kits = [];
-  if (window.FINGER_SLASH_KIT) kits.push(window.FINGER_SLASH_KIT);   // 学校のサーバー等に自前で置く場合の差し替え口
-  kits.push({ name: 'local', bundle: '/vendor/vision_bundle.mjs', wasm: '/vendor/wasm', models: ['/vendor/hand_landmarker.task'], timeout: 15000 });
-  kits.push({ name: 'cdn', bundle: `${CDN}/vision_bundle.mjs`, wasm: `${CDN}/wasm`, models: MODEL_URLS, timeout: 120000 });
-  let lastErr = null; dlBytes = 0;
-  for (const kit of kits) {
-    try {
-      const mod = await withTimeout(import(kit.bundle), kit.timeout, 'bundle');
-      let model = null;   // 先に小さいモデルを取る（取れなければ、大きいwasmを無駄に落とさない）
-      for (const url of kit.models) { try { model = await fetchBytes(url, kit.timeout, true); break; } catch (e) { lastErr = e; } }
-      if (!model) continue;
-      for (const f of ['vision_wasm_internal.js', 'vision_wasm_internal.wasm']) { try { await fetchBytes(kit.wasm + '/' + f, kit.timeout, false); } catch (e) { /* 本番の読みこみでもう一度ためす */ } }
-      const fileset = await withTimeout(mod.FilesetResolver.forVisionTasks(kit.wasm), kit.timeout, 'wasm');
-      // GPU と CPU の両方で実際に速さを測り、速いほうを使う
-      // （GPUが使えないPCでは、GPU方式がソフトで代わりに動いて10倍以上おそくなることがあるため）
-      const pref = (qs.get('delegate') || '').toUpperCase(), order = pref === 'CPU' ? ['CPU'] : pref === 'GPU' ? ['GPU'] : ['GPU', 'CPU'];
-      let best = null, bestMs = Infinity, bestD = '';
-      for (const delegate of order) {
-        let lm;
-        try {
-          lm = await withTimeout(mod.HandLandmarker.createFromOptions(fileset, {
-            baseOptions: { modelAssetBuffer: model.slice(), delegate }, runningMode: 'VIDEO', numHands: 2,
-            minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
-          }), kit.timeout, 'init');
-        } catch (e) { lastErr = e; continue; }
-        if (state === 'loading') $('#loadSub').textContent = `AIの速さを測っています…（${delegate}）`;
-        const ms = await benchLandmarker(lm);
-        if (ms < bestMs) { if (best) try { best.close(); } catch (e) { /* 何もしない */ } best = lm; bestMs = ms; bestD = delegate; }
-        else try { lm.close(); } catch (e) { /* 何もしない */ }
-        if (bestMs <= 25) break;   // じゅうぶん速ければ、もう一方は試さない
-      }
-      if (best) { AI.info = `${kit.name}/${bestD}`; AI.ms = isFinite(bestMs) ? bestMs : 0; return best; }
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr || new Error('AI load failed');
-}
-// 何回か手の検出を動かして、1回あたりの時間（ミリ秒）を測る。最初の2回は準備運動なので数えない
-async function benchLandmarker(lm) {
-  const v = Cam.video; if (!Cam.ready || v.readyState < 2) return 0;
-  const times = [];
-  for (let i = 0; i < 6; i++) {
-    await new Promise(r => setTimeout(r, 20));
-    const a = performance.now(); try { lm.detectForVideo(v, a); } catch (e) { return Infinity; }
-    if (i >= 2) times.push(performance.now() - a);
-    if (i === 2 && times[0] > 250) break;   // 明らかにおそいときは、それ以上測らない
-  }
-  times.sort((x, y) => x - y); return times[Math.floor(times.length / 2)];
-}
+const AI = {
+  tracker: null, p: null, hands: [], prev: [], valid: 0, latest: null, processedSequence: 0,
+  errs: 0, ms: 0, info: '', slowShown: false, slowT: 0, lastErr: null,
+  ensure() {
+    if (!this.tracker) {
+      dlBytes = 0;
+      const kits = [];
+      if (window.FINGER_SLASH_KIT) kits.push(window.FINGER_SLASH_KIT);
+      kits.push({ name: 'local', bundle: '/vendor/vision_bundle.mjs', wasm: '/vendor/wasm', models: ['/vendor/hand_landmarker.task'], timeout: 15000 });
+      kits.push({ name: 'cdn', bundle: `${CDN}/vision_bundle.mjs`, wasm: `${CDN}/wasm`, models: MODEL_URLS, timeout: 120000 });
+      this.tracker = createHandTracker({
+        video: Cam.video,
+        kits,
+        delegatePreference: (qs.get('delegate') || '').toUpperCase(),
+        adaptiveFrameSize: createAdaptiveFrameSize({
+          highWidth: TUNING.ai.inputWidth,
+          lowWidth: TUNING.ai.minInputWidth,
+          slowFrameMs: TUNING.ai.reduceAtMs,
+          fastFrameMs: TUNING.ai.restoreAtMs,
+          slowWindowMs: TUNING.ai.reduceAfterMs,
+          fastWindowMs: TUNING.ai.restoreAfterMs,
+        }),
+        onProgress: onBytes,
+        onStatus: message => { if (state === 'loading') $('#loadSub').textContent = message; },
+        onReady: info => {
+          this.info = `${info.name}/${info.delegate}`;
+          this.ms = info.ms;
+        },
+        onResult: result => {
+          if (state !== 'ready' && state !== 'countdown' && state !== 'play') return;
+          this.latest = result;
+          this.errs = 0;
+        },
+        onError: error => {
+          this.lastErr = error;
+          if (++this.errs > 8 && runMode === 'ai') {
+            this.errs = 0;
+            const failedTracker = this.tracker;
+            this.tracker = null;
+            this.p = null;
+            if (failedTracker) failedTracker.dispose();
+            toast('AIがうまく動かないので、モーションモードに切りかえます', 6000);
+            switchToMotion();
+          }
+        },
+        onFatal: error => {
+          this.lastErr = error;
+          const failedTracker = this.tracker;
+          this.tracker = null;
+          this.p = null;
+          if (failedTracker) failedTracker.dispose();
+          if (runMode === 'ai') {
+            toast('AIの処理が停止したため、モーションモードに切りかえました', 6000);
+            switchToMotion();
+          }
+        },
+      });
+    }
+    if (!this.p) {
+      const tracker = this.tracker;
+      this.p = tracker.start().then(info => {
+        this.info = `${info.name}/${info.delegate}`;
+        this.ms = info.ms;
+        return info;
+      }, error => {
+        this.lastErr = error;
+        if (this.tracker === tracker) {
+          tracker.dispose();
+          this.tracker = null;
+          this.p = null;
+        }
+        throw error;
+      });
+    }
+    return this.p;
+  },
+  cancel() {
+    if (this.tracker) this.tracker.dispose();
+    this.tracker = null;
+    this.p = null;
+    this.latest = null;
+  },
+};
 function aiStep(t, dt) {
-  if (!AI.lm || !Cam.ready) return;
-  const v = Cam.video; if (v.readyState < 2 || v.currentTime === AI.lastVT) return; AI.lastVT = v.currentTime;
-  const t0 = performance.now(); let res;
-  try { res = AI.lm.detectForVideo(v, t0); AI.errs = 0; }
-  catch (e) { if (++AI.errs > 8) { toast('AIがうまく動かないので、モーションモードに切りかえます', 6000); AI.lm = null; AI.p = null; switchToMotion(); } return; }
-  AI.ms = lerp(AI.ms, performance.now() - t0, .1);
+  if (!AI.tracker || !Cam.ready || !AI.latest || AI.latest.sequence === AI.processedSequence) return;
+  const result = AI.latest;
+  AI.processedSequence = result.sequence;
+  AI.ms = lerp(AI.ms, result.inferenceMs, .1);
   if (!AI.slowShown && AI.ms > 60 && frameCount > 120) { AI.slowShown = true; toast('動きがカクカクするときは、「モーション」モードがおすすめです', 6000); }
   // AIの処理が0.1秒をこえる状態が続いたら、モーションモードへ切りかえる
   AI.slowT = AI.ms > 100 ? (AI.slowT || 0) + Math.max(dt, AI.ms / 1000) : 0;
   if (AI.slowT > 1) { AI.slowT = 0; toast('このPCではAIの処理が0.1秒をこえるため、モーションモードに切りかえました。STAFFメニューから変更できます', 9000); switchToMotion(); return; }
   // 大きく写っている手（＝前に立っている人の手）から順に2つまで使う
-  const all = (res && res.landmarks) ? res.landmarks : [], minPx = S.booth ? TUNING.boothMinHandPx : 0;
-  AI.hands = all.map(h => { const pts = h.map(l => mapNorm(l.x, l.y)); return { lm: h, pts, raw: pts, size: Math.hypot(pts[0].x - pts[9].x, pts[0].y - pts[9].y), ok: false }; });
-  predictHands(t, dt);
+  const minPx = S.booth ? TUNING.boothMinHandPx : 0;
+  const sampleTime = result.capturedAt / 1000;
+  const landmarks = result.landmarks || [];
+  AI.hands = landmarks.map(h => { const pts = h.map(l => mapNorm(l.x, l.y)); return { lm: h, pts, raw: pts, size: Math.hypot(pts[0].x - pts[9].x, pts[0].y - pts[9].y), ok: false }; });
+  predictHands(sampleTime, dt);
   const valid = AI.hands.filter(h => h.size >= minPx).sort((a, b) => b.size - a.size).slice(0, 2);
   for (const h of valid) h.ok = true;
   AI.valid = valid.length;
-  assignHands(valid.map(h => h.pts), t);
+  assignHands(valid.map(h => h.pts), sampleTime);
 }
 // 検出した手の位置は「少し前のコマ」のもの。手を動かしていると、その遅れのぶん点が実際の手からずれて見える。
 // 前回との差から速さを出し、遅れのぶんだけ先に進めた位置を使う（手を止めているときは何も変わらない）
@@ -248,7 +262,16 @@ function predictHands(t, frameSec) {
   }
   AI.prev = next;
 }
-function switchToMotion() { runMode = 'motion'; Motion.reset(); AI.hands = []; AI.valid = 0; for (const p of ptrs) p.active = false; }
+function switchToMotion() {
+  runMode = 'motion';
+  if (AI.tracker) AI.tracker.pause();
+  AI.latest = null;
+  AI.prev = [];
+  AI.hands = [];
+  AI.valid = 0;
+  Motion.reset();
+  for (const p of ptrs) p.active = false;
+}
 
 // ============================================================
 //  ゆび（ポインタ）… AIの手 / マウス / タッチ のどれでも同じように扱う
@@ -347,6 +370,13 @@ function setState(s) {
   for (const k in screens) screens[k].classList.toggle('on', k === s);
   stage.classList.toggle('booth', S.booth);
   $('#bar').classList.toggle('on', !S.booth && (s === 'ready' || s === 'countdown' || s === 'play' || s === 'paused'));
+  if (AI.tracker && runMode === 'ai') {
+    if (s === 'ready' || s === 'countdown' || s === 'play') AI.tracker.resume();
+    else {
+      AI.tracker.pause();
+      AI.latest = null;
+    }
+  }
 }
 let toastTimer = 0;
 function toast(msg, ms = 4000) { const el = $('#toast'); el.textContent = msg; el.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), ms); }
@@ -507,14 +537,27 @@ async function startFlow() {
     catch (e) { if (my !== flowId) { Cam.stop(); return; } toast(camMessage(e), 8000); runMode = 'mouse'; Cam.stop(); }
   }
   if (my !== flowId) { Cam.stop(); return; }
+  let aiSkipped = false;
   if (runMode === 'ai') {
     showLoading('AIを準備しています…', 'はじめては少し時間がかかります（目安: 10〜40びょう）。次からは早くなります。', true, true);
     const res = await Promise.race([AI.ensure().then(() => 'ok', () => 'fail'), new Promise(r => { skipResolve = () => r('skip'); })]);
     skipResolve = null; if (my !== flowId) { Cam.stop(); return; }
-    if (res !== 'ok') { runMode = 'motion'; toast(res === 'skip' ? 'モーションモードで始めます' : 'AIを読みこめなかったので、モーションモードで始めます。ネットの接続を確認してね。', 7000); }
+    aiSkipped = res === 'skip';
+    if (res !== 'ok') {
+      runMode = 'motion';
+      if (res === 'skip') toast('モーションモードで始めます', 7000);
+      else {
+        const reason = AI.lastErr && AI.lastErr.message ? AI.lastErr.message : '不明なエラー';
+        console.error('AI initialization failed:', AI.lastErr);
+        toast(`AIの準備に失敗しました: ${reason.slice(0, 120)}。通信・ブラウザーの対応を確認してね。モーションで続けます。`, 9000);
+      }
+    }
   }
   if (runMode === 'motion') Motion.reset();
-  AI.hands = []; AI.valid = 0; AI.lastVT = -1; for (const p of ptrs) { p.active = false; p.trail.length = 0; }
+  if (aiSkipped) AI.cancel();
+  AI.hands = []; AI.prev = []; AI.valid = 0; AI.latest = null; AI.processedSequence = 0;
+  AI.slowT = 0;
+  for (const p of ptrs) { p.active = false; p.trail.length = 0; }
   enterReady(false);
 }
 function showLoading(msg, sub, canSkip, canCancel) {
@@ -713,7 +756,11 @@ function renderBoard() {
   $('#todayCount').innerHTML = `本日の挑戦者 <b>${td.length}</b>人`; $('#staffCount').textContent = `今日のプレイ数：${td.length}回`;
 }
 function toMenu() {
-  flowId++; resultSeq++; starting = false; Music.stop(); Cam.stop(); Motion.reset(); AI.hands = []; AI.valid = 0; for (const p of ptrs) { p.active = false; p.trail.length = 0; }
+  flowId++; resultSeq++; starting = false; Music.stop(); Cam.stop(); Motion.reset();
+  if (state === 'loading') AI.cancel();
+  else if (AI.tracker) AI.tracker.pause();
+  AI.hands = []; AI.prev = []; AI.latest = null; AI.valid = 0;
+  for (const p of ptrs) { p.active = false; p.trail.length = 0; }
   monsters = []; shots = []; cracks = []; fx = []; feverT = 0; fxEl.textContent = ''; setState('menu'); renderBoard();
   const w = wakeLock; wakeLock = null; if (w) w.release().catch(() => {});
 }

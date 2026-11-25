@@ -26,12 +26,19 @@ Netlify Drop などへ公開するときは、`dist/` の中身をアップロ�
 - `index.html` はアプリの起動に必要な最小のHTMLです。
 - `src/main.js` はスタイルと画面テンプレートを読み込み、ゲームを起動します。
 - `src/config.js` はゲームの調整値を管理し、`src/game/` はモンスター・火の玉攻撃・スコア計算を管理します。
-- `src/input/` はカメラとモーション検出、`src/audio/` は効果音とBGMを管理します。
+- `src/input/` はカメラとモーション検出を管理します。AIの手認識はWorkerで実行し、処理時間に応じて入力映像の幅を640pxまたは480pxに調整します。Workerは処理可能になった時点で最新フレームを要求するため、待ち行列に古い映像がたまりません。
+- `src/audio/` は効果音とBGMを管理します。
 - `src/game/runtime.js` はゲーム進行と画面表示をまとめています。
 - `src/view.html` と `src/styles.css` は画面テンプレートとスタイルです。
 - `src/game/boss.js` は最後の5秒に出るボスの移動と体力を管理します。
 - `src/game/ghost.js` は前のプレイヤーの記録の圧縮・補間を担当します。
 - `assets/` に背景透過の `slime.png`、`ghost.png`、`bat.png`、`golem.png`、`star.png`、`bomb.png`、`fireball.png`、`boss.png` を置くと、対応する絵に差し替わります。
+
+## AIを読み込めないとき
+
+初回はMediaPipe本体と手の認識モデル（約22MB）をダウンロードします。AIの準備に失敗した場合はモーションモードに切り替わり、画面に失敗理由が表示されます。ネットワーク制限のある環境では `cdn.jsdelivr.net` と `storage.googleapis.com` への接続が必要です。
+
+オフラインで使う場合は、MediaPipeの配布ファイルを `public/vendor/vision_bundle.mjs`、`public/vendor/wasm/`、`public/vendor/hand_landmarker.task` に配置してください。
 
 ## ボス戦
 

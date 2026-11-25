@@ -16,6 +16,12 @@ const TUNING = {
     smoothMin: 0.8,     // 小さな動きのときだけ、指先のぶれを抑える
     smoothMax: 1,       // 大きく動かしたときは検出位置にすぐ追従
     smoothDist: 40,     // この距離（ピクセル）動くと追従が強くなる
+    inputWidth: 640,
+    minInputWidth: 480,
+    reduceAtMs: 85,
+    restoreAtMs: 45,
+    reduceAfterMs: 750,
+    restoreAfterMs: 2500,
   },
   attacks: {               // てきの攻撃（火の玉）。スタッフメニューの「てきの攻撃」でオン・オフ
     startAfter: 6,         // ゲーム開始から何びょう後に、攻撃が始まるか
