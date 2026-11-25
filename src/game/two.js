@@ -11,6 +11,12 @@ export function playerIndexForX(x, width, two) {
   return two && x >= width / 2 ? 1 : 0;
 }
 
+// ボスへの斬りのクールダウンを数える単位（＝人）。1人プレイは両手で1つ、2人プレイは左右の人で別々
+// ptrIndex: ptrs の何番目の指か（0 / 1）
+export function slashCooldownKey(ptrIndex, two) {
+  return two && ptrIndex === 1 ? 'p2' : 'p1';
+}
+
 // AIが見つけた手から、左右それぞれ1つずつ選ぶ。戻り値は [左の手 or null, 右の手 or null]
 //  1) 小さすぎる手（うしろに並んでいる人の手）は使わない
 //  2) 手のひら中心が、画面の真ん中の不感帯（幅 × centerDeadZone の半分ずつ）に入っている手は使わない

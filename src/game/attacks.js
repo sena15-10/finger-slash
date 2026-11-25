@@ -18,9 +18,19 @@ function updateAttacks(dt) {
 function launchShot(opts) {
   if (opts && opts.forceFrom) {   // ボス自身が投げる火の玉
     const from = opts.forceFrom, radius = opts.radius || 40;
-    const s = { st: 'charge', t: 0, from, fromBoss: true, radius, x: from.x, y: from.y - radius * .9, ox: 0, oy: 0, tx: rnd(170, W - 170), ty: rnd(180, 430), r: 10, vx: 0, vy: 0, gone: false, windup: opts.windup };
-    state.shots.push(s); Snd.charge();
-    return s;
+    const count = Math.max(1, opts.count || 1);
+    const shots = [];
+    for (let i = 0; i < count; i++) {
+      const spreadIndex = count === 1 ? 0 : i - (count - 1) / 2;
+      const tx = opts.targetX != null
+        ? opts.targetX + spreadIndex * (opts.spread || 150)
+        : rnd(170, W - 170);
+      const s = { st: 'charge', t: 0, from, fromBoss: true, radius, x: from.x, y: from.y - radius * .9, ox: 0, oy: 0, tx, ty: opts.targetY != null ? opts.targetY : rnd(180, 430), r: 10, vx: 0, vy: 0, gone: false, windup: opts.windup };
+      state.shots.push(s);
+      shots.push(s);
+    }
+    Snd.charge();
+    return count === 1 ? shots[0] : shots;
   }
   const cand = state.monsters.filter(m => !m.dead && m.age > .3 && !MON[m.type].bad && !MON[m.type].fever && m.x > 90 && m.x < W - 90 && m.y > 70 && m.y < 380);
   const from = cand.length ? pick(cand) : null;   // 画面にいる敵が投げる（いなければ、遠くから飛んでくる）

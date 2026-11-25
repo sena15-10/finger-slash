@@ -10,7 +10,7 @@ import {
 } from './src/game/gesture.js';
 import {
   creditBossResult, handSize, makeTwoEntry, playerIndexForX, pruneTwoScores, removeTodayTwoScores,
-  selectTwoPlayerHands, twoBoardRows, twoPlayerVerdict,
+  selectTwoPlayerHands, slashCooldownKey, twoBoardRows, twoPlayerVerdict,
 } from './src/game/two.js';
 import { comboMultiplier } from './src/game/scoring.js';
 import { MON } from './src/game/monsters.js';
@@ -110,6 +110,35 @@ test('boss paces left-right within moveMargin of the arena edges', () => {
     assert.equal(patrol.y, 540 * TUNING.boss.yRatio);   // 上下には動かない
   }
   assert.equal(bounced, true);
+});
+
+test('boss changes movement and shot patterns at HP phases', () => {
+  const boss = createBoss(TUNING.boss, 150, 960, 540, 0);
+  updateBoss(boss, 0.5, TUNING.boss, 960, 540);
+  assert.equal(boss.phase, 'patrol');
+  assert.equal(boss.y, 540 * TUNING.boss.yRatio);
+
+  boss.hp = 90;
+  updateBoss(boss, 0.5, TUNING.boss, 960, 540);
+  assert.equal(boss.phase, 'zigzag');
+  assert.notEqual(boss.y, boss.baseY);
+
+  boss.hp = 40;
+  updateBoss(boss, 0.5, TUNING.boss, 960, 540);
+  assert.equal(boss.phase, 'rush');
+  assert.notEqual(boss.y, boss.baseY);
+
+  boss.hp = 90;
+  boss.shotIndex = 0;
+  boss.shotResolvedUntil = 0;
+  assert.equal(updateBossShots(boss, 2.4, TUNING.boss, 0), 'launch');
+  assert.equal(boss.pendingPattern, 'double');
+
+  boss.hp = 40;
+  boss.shotIndex = 1;
+  boss.shotResolvedUntil = 0;
+  assert.equal(updateBossShots(boss, 5.4, TUNING.boss, 0), 'launch');
+  assert.equal(boss.pendingPattern, 'triple');
 });
 
 test('boss fires on schedule (appear+3, +6, ...), telegraphs 0.6s before, and caps concurrent shots', () => {
@@ -435,6 +464,16 @@ test('playerIndexForX: always 0 for one player; left half 0 / right half 1 for t
   assert.equal(playerIndexForX(959, TW, true), 1);
 });
 
+test('one player: both hands share one boss slash cooldown (no double damage); two players: one cooldown each', () => {
+  assert.equal(slashCooldownKey(0, false), slashCooldownKey(1, false));
+  assert.notEqual(slashCooldownKey(0, true), slashCooldownKey(1, true));
+
+  const boss = createBoss(TUNING.boss, TUNING.boss.hp[30], 960, 540, 0);
+  assert.equal(damageBoss(boss, TUNING.boss.minSlashSpeed, TUNING.boss, slashCooldownKey(0, false)).applied, true);
+  assert.equal(damageBoss(boss, TUNING.boss.minSlashSpeed, TUNING.boss, slashCooldownKey(1, false)).applied, false);   // もう片方の手でも、0.12びょうは入らない
+  assert.equal(boss.hp, TUNING.boss.hp[30] - TUNING.boss.slashDamage);
+});
+
 // 2人プレイの攻撃まわり: runtime と同じつなぎ方で createAttacks を作る
 function makeTwoAttacks({ two = true, boss = null } = {}) {
   const ptrs = [{ x: 0, y: 0, ox: 0, oy: 0 }, { x: 0, y: 0, ox: 0, oy: 0 }];
@@ -581,7 +620,7 @@ function simulateFrames({ two, frames }) {
     }
     for (const p of ptrs) {
       const speed = Math.hypot(p.x - p.ox, p.y - p.oy) / dt;
-      if (segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) <= TUNING.boss.radius) damageBoss(boss, speed, TUNING.boss, p === ptrs[0] ? 'p1' : 'p2');
+      if (segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) <= TUNING.boss.radius) damageBoss(boss, speed, TUNING.boss, slashCooldownKey(ptrs.indexOf(p), two));
       for (const s of state.shots) if (s.st === 'fly' && gestures.some(g => shotInsideShield(s.x, s.y, g, TUNING.gesture.shieldRadius))) s.gone = true;
     }
     // 手の技（グー演出: 5びょうごとに全体攻撃）

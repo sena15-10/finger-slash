@@ -40,6 +40,12 @@ const TUNING = {
     minSlashSpeed: 220,              // これより速い斬りだけ有効（px/びょう）
     defeatBonus: 500,                // 撃破したときのボーナス点（コンボ倍率なし）
     moveSpeed: 60,                   // 左右に動く速さ
+    moveSpeedBoost: 1.35,            // 中盤の左右移動の速度倍率
+    moveSpeedRush: 1.7,              // 残り体力が少ないときの速度倍率
+    yWaveAmplitude: 30,              // 中盤の上下うごきの大きさ
+    yWaveRushAmplitude: 55,          // 終盤の上下うごきの大きさ
+    phaseMidRatio: 0.66,             // この残りHP比率以下でジグザグフェーズ
+    phaseRushRatio: 0.33,            // この残りHP比率以下で高速フェーズ
     moveMargin: 140,                 // 画面の左右の端から、これだけ内側を往復する
     maxMonsters: 6,                  // ボスがいる間の、通常モンスターの上限
     barHeight: 10,

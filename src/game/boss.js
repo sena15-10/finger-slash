@@ -3,9 +3,15 @@ export function shouldSpawnBoss(enabled, alreadyAppeared, timeLeft, appearAt) {
 }
 
 export function createBoss(tuning, hp, arenaWidth, arenaHeight, appearedAt) {
+  const baseY = arenaHeight * tuning.yRatio;
   return {
     x: arenaWidth / 2,
-    y: arenaHeight * tuning.yRatio,
+    y: baseY,
+    baseY,
+    motionTime: 0,
+    phase: 'patrol',
+    pendingPattern: 'single',
+    dashPhase: 0,
     hp,
     maxHp: hp,
     vx: tuning.moveSpeed,
@@ -17,15 +23,35 @@ export function createBoss(tuning, hp, arenaWidth, arenaHeight, appearedAt) {
   };
 }
 
-export function updateBoss(boss, deltaSeconds, tuning, arenaWidth) {
+export function updateBoss(boss, deltaSeconds, tuning, arenaWidth, arenaHeight) {
   if (!boss || boss.hp <= 0) return;
   if (boss.cooldowns) {
     for (const key in boss.cooldowns) boss.cooldowns[key] = Math.max(0, boss.cooldowns[key] - deltaSeconds);
   }
+  boss.motionTime = (boss.motionTime || 0) + deltaSeconds;
+  boss.baseY = boss.baseY ?? (arenaHeight ?? 540) * tuning.yRatio;
+  const hpRatio = boss.maxHp ? boss.hp / boss.maxHp : 1;
+  const midRatio = tuning.phaseMidRatio ?? 0.66;
+  const rushRatio = tuning.phaseRushRatio ?? 0.33;
+  boss.phase = hpRatio <= rushRatio ? 'rush' : hpRatio <= midRatio ? 'zigzag' : 'patrol';
+
+  const speedMultiplier = boss.phase === 'rush'
+    ? (tuning.moveSpeedRush ?? 1.7)
+    : boss.phase === 'zigzag'
+      ? (tuning.moveSpeedBoost ?? 1.35)
+      : 1;
+  boss.x += boss.vx * speedMultiplier * deltaSeconds;
   const left = tuning.moveMargin, right = arenaWidth - tuning.moveMargin;
-  boss.x += boss.vx * deltaSeconds;
   if (boss.x >= right) { boss.x = right; boss.vx = -Math.abs(boss.vx); }
   else if (boss.x <= left) { boss.x = left; boss.vx = Math.abs(boss.vx); }
+
+  if (boss.phase === 'patrol') {
+    boss.y = boss.baseY;
+  } else if (boss.phase === 'zigzag') {
+    boss.y = boss.baseY + Math.sin(boss.motionTime * 2.2) * (tuning.yWaveAmplitude ?? 30);
+  } else {
+    boss.y = boss.baseY + Math.sin(boss.motionTime * 3.8) * (tuning.yWaveRushAmplitude ?? 55);
+  }
 }
 
 // 出現から shotInterval びょうごとに1回、火の玉の発射を予定する。
@@ -41,6 +67,12 @@ export function updateBossShots(boss, elapsed, tuning, activeBossShotCount) {
   boss.shotResolvedUntil = fireTime;
   if (activeBossShotCount >= tuning.maxShots) { boss.telegraphUntil = 0; return null; }
   boss.telegraphUntil = fireTime;
+  const hpRatio = boss.maxHp ? boss.hp / boss.maxHp : 1;
+  boss.pendingPattern = hpRatio <= (tuning.phaseRushRatio ?? 0.33)
+    ? 'triple'
+    : hpRatio <= (tuning.phaseMidRatio ?? 0.66)
+      ? 'double'
+      : 'single';
   return 'launch';
 }
 

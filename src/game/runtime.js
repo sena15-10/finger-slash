@@ -9,7 +9,7 @@ import { createAttacks } from './attacks.js';
 import { bossHpPercent, createBoss, damageBoss, damageBossFlat, reflectDamageBoss, shouldSpawnBoss, updateBoss, updateBossShots } from './boss.js';
 import { createGhostSample, ghostResultText, hasAnyHand, normalizeGhostPoint, packGhost, sampleGhost, unpackGhost } from './ghost.js';
 import { addGauge, classifyHandShape, consumeFist, createGestureState, shotInsideShield, tryActivateShield, updateHold, updateShieldTimers } from './gesture.js';
-import { creditBossResult, makeTwoEntry, playerIndexForX as sideOfX, pruneTwoScores, removeTodayTwoScores, selectTwoPlayerHands, twoBoardRows, twoPlayerVerdict, validTwoEntries } from './two.js';
+import { creditBossResult, makeTwoEntry, playerIndexForX as sideOfX, pruneTwoScores, removeTodayTwoScores, selectTwoPlayerHands, slashCooldownKey, twoBoardRows, twoPlayerVerdict, validTwoEntries } from './two.js';
 
 
 // ============================================================
@@ -530,7 +530,20 @@ function updateBossAttacks() {
   if (!boss || boss.hp <= 0) return;
   const activeBossShots = shots.filter(s => s.fromBoss && !s.gone && s.st !== 'back').length;
   const action = updateBossShots(boss, elapsed, TUNING.boss, activeBossShots);
-  if (action === 'launch') launchShot({ forceFrom: boss, windup: TUNING.boss.telegraph, radius: TUNING.boss.radius });
+  if (action === 'launch') {
+    const desired = boss.pendingPattern === 'triple' ? 3 : boss.pendingPattern === 'double' ? 2 : 1;
+    const count = Math.min(desired, Math.max(0, TUNING.boss.maxShots - activeBossShots));
+    if (count === 0) return;
+    launchShot({
+      forceFrom: boss,
+      windup: TUNING.boss.telegraph,
+      radius: TUNING.boss.radius,
+      count,
+      targetX: W / 2,
+      targetY: H * 0.72,
+      spread: 150,
+    });
+  }
 }
 // ---- 手の技（グー・パー）----
 // 1人プレイは両手（ptrs全体）、2人プレイは自分の側の手だけから、手の形を見る
@@ -576,7 +589,7 @@ function testHits(dt = 0) {
       if (!p.active || boss.hp <= 0) continue;
       const speed = dt > 0 ? Math.hypot(p.x - p.ox, p.y - p.oy) / dt : 0;
       if (speed < TUNING.boss.minSlashSpeed || segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) > TUNING.boss.radius) continue;
-      const result = damageBoss(boss, speed, TUNING.boss, p === ptrs[0] ? 'p1' : 'p2');
+      const result = damageBoss(boss, speed, TUNING.boss, slashCooldownKey(ptrs.indexOf(p), S.two));   // 1人プレイは両手で1つのクールダウン
       if (!result.applied) continue;
       const pi = playerIndexForPtr(p);
       if (S.gesture) addGauge(gestureStates[pi], TUNING.gesture.gaugeBossHit);
@@ -747,7 +760,7 @@ function updatePlay(dt) {
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
   if (comboT2 > 0) { comboT2 -= dt; if (comboT2 <= 0) combo2 = 0; }
   maybeSpawnBoss();
-  updateBoss(boss, dt, TUNING.boss, W);
+  updateBoss(boss, dt, TUNING.boss, W, H);
   updateBossAttacks();
   updateSpawner(dt);
   for (const m of monsters) updateMonster(m, dt);
