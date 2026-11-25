@@ -7,6 +7,7 @@ import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
 import { createAttacks } from './attacks.js';
 import { createBoss, damageBoss, shouldSpawnBoss, updateBoss } from './boss.js';
+import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
 
 
 // ============================================================
@@ -53,6 +54,7 @@ const S = {
   view: oneOf(qs.get('view'), ['show', 'blur', 'hide'], oneOf(store.get('view', 'show'), ['show', 'blur', 'hide'], 'show')),
   attack: qs.has('attack') ? qs.get('attack') !== '0' : store.get('attack', true) !== false,
   boss: qs.has('boss') ? qs.get('boss') !== '0' : store.get('boss', true) !== false,
+  ghost: qs.has('ghost') ? qs.get('ghost') !== '0' : store.get('ghostEnabled', true) !== false,
 };
 const diffCfg = () => TUNING.difficulty[S.diff];
 
@@ -306,6 +308,7 @@ let entry = null, entryDefault = '', lastAt = 0, autoT = 0, autoMsg = '', result
 let attractT = 0, attractPage = 0, loadTipT = 0, wakeLock = null;
 let shots = [], shotT = 0, reflects = 0, shotHits = 0, cracks = [], attackHinted = false;
 let boss = null, bossAppeared = false, bossDefeated = false;
+let previousGhost = null, ghostSamples = [], ghostNextSample = 0;
 const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT });
 const effectState = { get fx() { return fx; }, set fx(value) { fx = value; } };
 const { burst, ring, addText, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
@@ -564,6 +567,15 @@ function resetRound() {
   timeLeft = S.time; elapsed = 0; spawnT = .6; shake = 0; flashRed = 0; hitStop = 0; lastShown = false; lastSec = 99;
   shots = []; cracks = []; shotT = TUNING.attacks.startAfter; reflects = 0; shotHits = 0; attackHinted = false;
   boss = null; bossAppeared = false; bossDefeated = false;
+  previousGhost = S.ghost ? unpackGhost(store.get('ghost', null), TUNING.ghost) : null;
+  ghostSamples = []; ghostNextSample = 0;
+}
+function recordGhostSamples() {
+  if (!S.ghost) return;
+  while (ghostNextSample <= elapsed && ghostNextSample <= TUNING.ghost.maxDuration) {
+    ghostSamples.push(createGhostSample(ghostNextSample, ptrs, score, TUNING.ghost.interval));
+    ghostNextSample = Number((ghostNextSample + TUNING.ghost.interval).toFixed(4));
+  }
 }
 // ---- READY? → 3 → 2 → 1 → START! ----
 function startCountdown() { resetRound(); cdT = 0; cdStage = -1; setState('countdown'); }
@@ -590,6 +602,7 @@ function updatePlay(dt) {
   updateAttacks(dt);
   testHits(dt);
   monsters = monsters.filter(m => !m.dead);
+  recordGhostSamples();
   if (!lastShown && timeLeft <= 10 && S.time > 12) { lastShown = true; banner('ラスト10びょう！', 'last band', 1400); Snd.alarm(); }
   const sec = Math.ceil(timeLeft); if (sec !== lastSec) { lastSec = sec; if (sec <= 5 && sec > 0) Snd.tick(); }
   if (timeLeft <= 0) { timeLeft = 0; finishRound(); }
@@ -620,12 +633,16 @@ function saveScores(list) {   // 今日の記録はぜんぶ、ほかの日は�
 // ---- けっか画面（順番に出していく）----
 function endRound() {
   Music.stop(); feverT = 0;
+  if (S.ghost && ghostSamples.length) store.set('ghost', packGhost(ghostSamples, TUNING.ghost));
   const rk = rankOf(score), em = $('#emblem'); $('#rankLetter').textContent = rk; em.dataset.rank = rk;
   $('#resScore').textContent = '0'; $('#resCombo').textContent = String(maxCombo); $('#resKills').textContent = String(kills); $('#resBombs').textContent = String(bombs);
   $('#resReflect').textContent = String(reflects); $('#st4').hidden = !S.attack; $('#rStats').classList.toggle('four', S.attack);
   const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
   $('#bossResult').hidden = !bossRemaining;
   if (bossRemaining) $('#bossResult').textContent = `ボスのHP 残り${Math.round(boss.hp / boss.maxHp * 100)}%`;
+  const ghostResult = S.ghost ? ghostResultText(score, previousGhost) : '';
+  $('#ghostResult').hidden = !ghostResult;
+  if (ghostResult) $('#ghostResult').textContent = ghostResult;
   $('#secret').innerHTML = '<b>AIのひみつ</b>　' + pick(SECRETS);
   const nm = $('#nameInput');
   const before = S.booth ? todayScores() : allScores().sort((a, b) => b.s - a.s);
@@ -712,7 +729,7 @@ function togglePause() {
 // ============================================================
 //  プレイ中の表示（HUD）… 値が変わったときだけ書きかえる
 // ============================================================
-const hud = { box: $('#hud'), score: $('#hScore'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), mode: $('#hMode'), hint: $('#hHint') };
+const hud = { box: $('#hud'), score: $('#hScore'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), mode: $('#hMode'), hint: $('#hHint'), ghost: $('#hGhost'), ghostText: $('#hGhostText'), ghostBar: $('#hGhostBar') };
 const hc = {};
 function setIf(key, v, fn) { if (hc[key] !== v) { hc[key] = v; fn(v); } }
 function updateHUD() {
@@ -732,21 +749,30 @@ function updateHUD() {
   const hint = runMode === 'mouse' ? 'マウスでモンスターにさわろう。ばくだんはさわらない！' : runMode === 'motion' ? '手を動かしてモンスターにふれよう。ばくだんはさけて！' : '人さし指でモンスターにさわろう。ばくだんはさけて！';
   setIf('hint', hint, v => { hud.hint.textContent = v; });
   setIf('hop', state === 'play' && hintT < 6 ? 1 : 0, v => { hud.hint.style.opacity = String(v); });
+  const hasGhost = S.ghost && previousGhost && previousGhost.length > 0;
+  setIf('ghost-on', !!hasGhost, v => hud.ghost.classList.toggle('on', v));
+  if (hasGhost) {
+    const previousScore = Math.round(sampleGhost(previousGhost, elapsed).s);
+    setIf('ghost-text', `前の人 ${previousScore}点 ／ いま ${score}点`, v => { hud.ghostText.textContent = v; });
+    const ratio = Math.round(score / Math.max(1, score, previousScore) * 100);
+    setIf('ghost-bar', ratio, v => { hud.ghostBar.style.width = `${v}%`; });
+  }
 }
 
 // ============================================================
 //  メニューまわり
 // ============================================================
-function bindRadios(name, key, cast, show = v => String(v)) {
+function bindRadios(name, key, cast, show = v => String(v), storageKey = key) {
   document.querySelectorAll(`input[name="${name}"]`).forEach(el => {
     el.checked = show(S[key]) === el.value;
-    el.addEventListener('change', () => { S[key] = cast(el.value); store.set(key, S[key]); renderBoard(); Snd.move(); });
+    el.addEventListener('change', () => { S[key] = cast(el.value); store.set(storageKey, S[key]); renderBoard(); Snd.move(); });
   });
 }
 bindRadios('mode', 'mode', v => v); bindRadios('diff', 'diff', v => v); bindRadios('time', 'time', v => parseInt(v, 10));
 bindRadios('booth', 'booth', v => v === '1', v => v ? '1' : '0'); bindRadios('view', 'view', v => v);
 bindRadios('attack', 'attack', v => v === '1', v => v ? '1' : '0');
 bindRadios('boss', 'boss', v => v === '1', v => v ? '1' : '0');
+bindRadios('ghost', 'ghost', v => v === '1', v => v ? '1' : '0', 'ghostEnabled');
 $('#embedNote').hidden = !embedded;
 function goFull(on) {
   try {
@@ -778,7 +804,8 @@ let resetArm = 0;
 $('#resetToday').addEventListener('click', () => {
   const b = $('#resetToday');
   if (Date.now() - resetArm > 4000) { resetArm = Date.now(); b.textContent = 'もう一度おすと消えます'; setTimeout(() => { if (Date.now() - resetArm >= 3900) b.textContent = '今日の記録をリセット'; }, 4000); return; }
-  resetArm = 0; const k = dayKey(Date.now()); store.set('scores', allScores().filter(e => dayKey(e.at) !== k));
+  resetArm = 0; const k = dayKey(Date.now()); store.set('scores', allScores().filter(e => dayKey(e.at) !== k)); store.set('ghost', null);
+  previousGhost = null; ghostSamples = []; ghostNextSample = 0;
   b.textContent = '今日の記録をリセット'; lastAt = 0; renderBoard(); toast('今日の記録をリセットしました', 3000);
 });
 document.querySelectorAll('.card, .chip, .gbtn').forEach(el => el.addEventListener('pointerenter', () => { if (Snd.ctx) Snd.move(); }));
@@ -925,6 +952,27 @@ function drawMonster(m, t, alpha = 1) {
   const sp = m.age < .2 ? easeOutBack(m.age / .2) : 1;   // 出てくるとき、ポンとふくらむ
   ctx.save(); ctx.globalAlpha = alpha; ctx.translate(m.x, m.y); if (sp !== 1) ctx.scale(sp, sp); drawBody(m, t);
   if (m.flash > 0) { ctx.globalAlpha = alpha * clamp(m.flash / .15, 0, 1) * .65; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, m.r * .95, 0, TAU); ctx.fill(); }
+  ctx.restore();
+}
+function drawGhostRace() {
+  if (!S.ghost || !previousGhost || !previousGhost.length) return;
+  const sample = sampleGhost(previousGhost, elapsed);
+  if (!sample) return;
+  ctx.save();
+  ctx.globalAlpha = TUNING.ghost.opacity;
+  ctx.strokeStyle = TUNING.ghost.color;
+  ctx.fillStyle = TUNING.ghost.color;
+  ctx.lineWidth = 3;
+  ctx.shadowColor = TUNING.ghost.color;
+  ctx.shadowBlur = TUNING.ghost.radius;
+  for (const point of sample.p) {
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, TUNING.ghost.radius, 0, TAU);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, TUNING.ghost.radius / 4, 0, TAU);
+    ctx.fill();
+  }
   ctx.restore();
 }
 function drawBoss() {
@@ -1086,6 +1134,7 @@ function render(t) {
     if (state === 'ready') for (const m of deco) drawMonster(m, t, .22);
     if (runMode === 'motion' && Cam.ready && state !== 'result') Motion.draw(S.eye || state === 'ready' ? .95 : .5);
     if (runMode === 'ai' && Cam.ready && (S.eye || state === 'ready' || state === 'countdown')) drawHands();
+    if (state !== 'result') drawGhostRace();
     if (state !== 'result') { const fa = state === 'finish' ? clamp(1 - finT / 1.2, 0, 1) : 1; for (const m of monsters) drawMonster(m, t, fa); drawBoss(); for (const s of shots) drawShot(s, t, fa); }
     drawFx();
     if (state !== 'result' && state !== 'finish') drawTrails(t);
@@ -1128,5 +1177,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();

@@ -41,6 +41,15 @@ const TUNING = {
     barOffset: 18,
     color: '#5dff9a',
   },
+  ghost: {
+    interval: 0.1,
+    maxDuration: 180,
+    maxSamples: 1801,
+    maxBytes: 48 * 1024,
+    radius: 18,
+    opacity: 0.42,
+    color: '#65f5ff',
+  },
   difficulty: {            // spawn:出る間かく(小さいほど多い) speed:速さ bomb:ばくだんの出やすさ pad:当たりの広さ(px)
     easy:   { spawn: 1.00, speed: 0.85, bomb: 0.05, pad: 24 },
     normal: { spawn: 0.80, speed: 1.00, bomb: 0.09, pad: 15 },

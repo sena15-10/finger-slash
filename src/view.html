@@ -4,6 +4,7 @@
   <!-- プレイ中の表示 -->
   <div id="hud" aria-hidden="true">
     <div class="h-score"><span class="h-lbl">SCORE</span><span id="hScore">0</span></div>
+    <div class="h-ghost" id="hGhost"><span id="hGhostText"></span><i><b id="hGhostBar"></b></i></div>
     <div class="h-time" id="hTimeBox"><svg viewBox="0 0 100 100"><circle class="trk" cx="50" cy="50" r="42"/><circle id="hRing" class="ring" cx="50" cy="50" r="42"/></svg><span class="h-tl">TIME</span><span id="hTime">30</span></div>
     <div class="h-combo" id="hCombo"><span id="hComboN">0</span><span class="h-cl">COMBO</span><span class="h-mult" id="hMult">×1</span><i class="h-cbar"><b id="hCbar"></b></i></div>
     <div class="h-fever" id="hFever"><span>FEVER</span><i><b id="hFbar"></b></i></div>
@@ -72,6 +73,11 @@
           <div class="chips sm" role="radiogroup" aria-label="ボス戦">
             <label class="chip"><input type="radio" name="boss" value="1"><span>あり</span></label>
             <label class="chip"><input type="radio" name="boss" value="0"><span>なし</span></label>
+          </div></div>
+        <div class="srow"><span class="olbl">ゴースト</span>
+          <div class="chips sm" role="radiogroup" aria-label="ゴーストレース">
+            <label class="chip"><input type="radio" name="ghost" value="1"><span>あり</span></label>
+            <label class="chip"><input type="radio" name="ghost" value="0"><span>なし</span></label>
           </div></div>
         <div class="staffrow"><span id="staffCount">今日のプレイ数：0回</span><button id="resetToday" class="mini" type="button">今日の記録をリセット</button></div>
         <p class="keys">キー操作　S メニュー　F 全画面　M 音　N 次の人</p>
@@ -142,6 +148,7 @@
       <p class="r-lbl">SCORE</p>
       <p class="r-score" id="resScore">0</p>
       <p class="boss-result" id="bossResult" hidden></p>
+      <p class="ghost-result" id="ghostResult" hidden></p>
       <dl class="r-stats" id="rStats">
         <div class="st rv" id="st1"><dt>たおした数</dt><dd id="resKills">0</dd></div>
         <div class="st rv" id="st2"><dt>さいだいコンボ</dt><dd id="resCombo">0</dd></div>
