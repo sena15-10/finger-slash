@@ -1,5 +1,7 @@
 export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, getBossPos = () => null, onBossReflectHit = null,
   addScore = () => {}, resetCombo = () => {}, playerIndexForPtr = () => 0, playerIndexForX = () => 0 }) {
+const BOSS_BACK_TIME = .4;   // はじいたボスの火の玉が、ボスに届くまでの目安（びょう）
+const BOSS_BACK_MAX = 1.5;   // それでも当たらなかったときに消すまでの時間（びょう）
 function updateAttacks(dt) {
   const A = TUNING.attacks, fly = A.flyTime[S.diff] || 1.8;
   const bossOn = isBossActive();
@@ -56,16 +58,22 @@ function updateShot(s, dt, A, fly) {
     s.x = lerp(s.ox, s.tx, k); s.y = lerp(s.oy, s.ty, k); s.r = 10 + 68 * Math.pow(k, 1.7);   // 近づくほど、急に大きく見える
     if (k >= 1) shotHit(s);
   } else if (s.st === 'back') {
-    s.x += s.vx * dt; s.y += s.vy * dt; s.r = Math.max(2, s.r * Math.pow(.08, dt));
+    const bossPos = s.fromBoss ? getBossPos() : null;
+    if (bossPos) {   // ボスの火の玉は、動いているボスへ毎コマ向き直す（はじいた場所が遠くても、かならず届く）
+      const dx = bossPos.x - s.x, dy = bossPos.y - s.y, l = Math.hypot(dx, dy) || 1, sp = Math.hypot(s.vx, s.vy);
+      s.vx = dx / l * sp; s.vy = dy / l * sp;
+    }
+    s.x += s.vx * dt; s.y += s.vy * dt; s.r = Math.max(bossPos ? 6 : 2, s.r * Math.pow(.08, dt));
     if (s.fromBoss && onBossReflectHit && onBossReflectHit(s)) { s.gone = true; return; }
-    if (s.t > .6) { s.gone = true; burst(s.x, s.y, '#ffd23f', 10, 160, .4); }
+    if (s.t > (bossPos ? BOSS_BACK_MAX : .6)) { s.gone = true; burst(s.x, s.y, '#ffd23f', 10, 160, .4); }
   }
 }
 function reflectShot(s, p) {
   s.st = 'back'; s.t = 0; state.reflects++;
   const bossPos = s.fromBoss ? getBossPos() : null;
   const dx = bossPos ? bossPos.x - s.x : (p ? p.x - p.ox : 0), dy = bossPos ? bossPos.y - s.y : (p ? p.y - p.oy : -1), l = Math.hypot(dx, dy) || 1;
-  s.vx = dx / l * 420; s.vy = dy / l * 420 - (bossPos ? 0 : 380);   // ボスの火の玉は、ボスへ。それ以外は、斬った向きに奥（上）へはじく
+  const speed = bossPos ? Math.max(420, l / BOSS_BACK_TIME) : 420;   // ボスへは、どこからはじいても約 BOSS_BACK_TIME びょうで届く速さ
+  s.vx = dx / l * speed; s.vy = dy / l * speed - (bossPos ? 0 : 380);   // ボスの火の玉は、ボスへ。それ以外は、斬った向きに奥（上）へはじく
   const pi = playerIndexForPtr(p); s.reflectedByPi = pi;   // ボスに当たったとき、この人のダメージにする
   bumpCombo(pi);
   const pts = TUNING.attacks.reflectPts * multOf(pi); addScore(pi, pts);

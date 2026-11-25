@@ -62,6 +62,7 @@ const S = {
 };
 if (S.mode !== 'ai') S.two = false;
 let soloTime = S.time;   // 2人プレイ中は60びょうに固定するので、1人用の選択を覚えておく
+let twoSuspended = false;   // 「2人」の設定のまま、AIが使えなかったので このプレイだけ1人にしている
 if (S.two) S.time = TUNING.two.duration;
 const diffCfg = () => TUNING.difficulty[S.diff];
 const AI_HANDS_SOLO = 3;   // 1人プレイのときにAIへ渡す手の数（2人プレイは TUNING.two.maxHands）
@@ -527,7 +528,7 @@ function applyBossDamageResult(result, label, pi = 0) {
   }
 }
 function updateBossAttacks() {
-  if (!boss || boss.hp <= 0) return;
+  if (!boss || boss.hp <= 0 || !S.attack) return;   // 「てきの攻撃」オフなら、ボスも火の玉を投げない
   const activeBossShots = shots.filter(s => s.fromBoss && !s.gone && s.st !== 'back').length;
   const action = updateBossShots(boss, elapsed, TUNING.boss, activeBossShots);
   if (action === 'launch') {
@@ -670,7 +671,8 @@ async function startFlow() {
     skipResolve = null; if (my !== flowId) { Cam.stop(); return; }
     if (res !== 'ok') { runMode = 'motion'; toast(res === 'skip' ? 'モーションモードで始めます' : 'AIを読みこめなかったので、モーションモードで始めます。ネットの接続を確認してね。', 7000); }
   }
-  if (runMode !== 'ai' && S.two) { S.two = false; syncTwoUI(); }   // 2人プレイはAIハンドのときだけ。それ以外になったら1人にもどす
+  // 2人プレイはAIハンドのときだけ。AIが使えなかったら、このプレイだけ1人にする（保存した「2人」の設定は変えない。メニューにもどると元にもどる）
+  if (runMode !== 'ai' && S.two) { twoSuspended = true; S.two = false; syncTwoUI({ persist: false }); }
   if (runMode === 'motion') Motion.reset();
   AI.hands = []; AI.valid = 0; AI.lastVT = -1; for (const p of ptrs) { p.active = false; p.trail.length = 0; }
   enterReady(false);
@@ -926,7 +928,9 @@ function renderBoard() {
 }
 function toMenu() {
   flowId++; resultSeq++; starting = false; Music.stop(); Cam.stop(); Motion.reset(); AI.hands = []; AI.valid = 0; for (const p of ptrs) { p.active = false; p.trail.length = 0; }
-  monsters = []; shots = []; cracks = []; fx = []; feverT = 0; fxEl.textContent = ''; setState('menu'); renderBoard();
+  monsters = []; shots = []; cracks = []; fx = []; feverT = 0; fxEl.textContent = '';
+  if (twoSuspended) { twoSuspended = false; S.two = S.mode === 'ai'; syncTwoUI({ persist: false }); }   // AIが使えず1人にしていたのを、設定どおりにもどす
+  setState('menu'); renderBoard();
   const w = wakeLock; wakeLock = null; if (w) w.release().catch(() => {});
 }
 function pauseGame() { if (state !== 'play') return; setState('paused'); Music.stop(); }
@@ -992,12 +996,13 @@ bindRadios('ghost', 'ghost', v => v === '1', v => v ? '1' : '0', 'ghostEnabled')
 bindRadios('gesture', 'gesture', v => v === '1', v => v ? '1' : '0');
 bindRadios('two', 'two', v => v === '1', v => v ? '1' : '0');
 document.querySelectorAll('input[name="time"]').forEach(el => el.addEventListener('change', () => { soloTime = S.time; }));
-document.querySelectorAll('input[name="mode"], input[name="two"]').forEach(el => el.addEventListener('change', syncTwoUI));
+document.querySelectorAll('input[name="mode"], input[name="two"]').forEach(el => el.addEventListener('change', () => syncTwoUI()));
 // 人数: 2人はAIハンドのときだけ。2人のあいだは TIME を60びょうに固定して選べなくする
-function syncTwoUI() {
+// persist: false のときは、画面と S だけ合わせて、保存はしない（AIが使えなかったプレイの一時的な1人化）
+function syncTwoUI({ persist = true } = {}) {
   const ai = S.mode === 'ai';
   if (!ai) S.two = false;   // モードがAIハンドでなくなったら、自動で1人にもどす
-  store.set('two', S.two);
+  if (persist) { store.set('two', S.two); twoSuspended = false; }   // 人が選び直したら、それが新しい設定
   S.time = S.two ? TUNING.two.duration : soloTime;
   document.querySelectorAll('input[name="two"]').forEach(el => { el.checked = (S.two ? '1' : '0') === el.value; if (el.value === '1') el.disabled = !ai; });
   $('#twoNote').hidden = ai;

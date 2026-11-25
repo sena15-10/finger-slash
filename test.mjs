@@ -232,6 +232,34 @@ test('reflected boss fireballs home toward the boss position', () => {
   assert.ok(s.vy < 0);   // boss.y(120) < s.y(300) なので、上へ向かう
 });
 
+test('a boss fireball reflected late (near the player, far from a moving boss) still reaches the boss', () => {
+  const state = { shots: [], shotT: 0, timeLeft: 5, reflects: 0, shake: 0 };
+  const boss = { x: 820, y: 120, vx: 102 };   // 終盤のいちばん速い動き（60 × 1.7）で、はじいた火の玉から逃げる向き
+  let hit = false;
+  const attacks = createAttacks({
+    TUNING, MON: {}, S: { attack: true, diff: 'normal' }, state, ...stubFx,
+    isBossActive: () => true, getBossPos: () => ({ x: boss.x, y: boss.y }),
+    onBossReflectHit: s => (hit = Math.hypot(s.x - boss.x, s.y - boss.y) <= TUNING.boss.radius + s.r),
+  });
+  const s = attacks.launchShot({ forceFrom: boss, windup: 0, radius: TUNING.boss.radius });
+  s.st = 'fly'; s.x = 120; s.y = 500; s.r = 78;   // 画面の左下、ほぼ届く直前にはじく
+  attacks.reflectShot(s, null);
+  for (let i = 0; i < 120 && !hit; i++) { boss.x += boss.vx / 60; attacks.updateAttacks(1 / 60); }
+  assert.equal(hit, true);
+  assert.equal(state.shots.length, 0);
+});
+
+test('a reflected non-boss fireball keeps its short life', () => {
+  const state = { shots: [], shotT: 99, timeLeft: 60, monsters: [], reflects: 0, shake: 0, attackHinted: true };
+  const attacks = createAttacks({ TUNING, MON: {}, S: { attack: true, diff: 'normal' }, state, ...stubFx });
+  const s = attacks.launchShot();
+  attacks.reflectShot(s, { x: 0, y: 0, ox: 0, oy: 10 });
+  attacks.updateAttacks(0.5);
+  assert.equal(state.shots.length, 1);
+  attacks.updateAttacks(0.2);
+  assert.equal(state.shots.length, 0);
+});
+
 test('ghost samples interpolate both hand positions and the previous score at the same time', () => {
   const samples = [
     { t: 0, p: [{ x: 10, y: 20 }, { x: 30, y: 40 }], s: 100 },
