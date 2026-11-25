@@ -825,6 +825,7 @@ function saveTwoScores(list) { store.set('scoresTwo', pruneTwoScores(list, dayKe
 // save: false のときは、ランキングに残さない（2人プレイがAIの停止で途中で終わったとき）
 function endRound({ save = true } = {}) {
   Music.stop(); feverT = 0;
+  resetModeChooser();
   $('#result').classList.toggle('two', S.two);
   if (S.two) { endRoundTwo({ save }); return; }
   if (ghostOn() && ghostSamples.length && hasAnyHand(ghostSamples)) {
@@ -871,6 +872,7 @@ function endRound({ save = true } = {}) {
 }
 // 2人プレイのけっか: 「左の人 ◯点」「右の人 ◯点」を並べ、多いほうに「勝ち！」（同点は「ひきわけ！」）。名前入力は出さない
 function endRoundTwo({ save = true } = {}) {
+  resetModeChooser();
   const l = score, r = score2, verdict = twoPlayerVerdict(l, r);
   const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
   $('#bossResult').hidden = !bossRemaining;
@@ -917,6 +919,29 @@ function updateResult(dt) {
   if (autoT <= 0) nextPlayer();
 }
 function nextPlayer() { if (state !== 'result') return; resultSeq++; $('#nameInput').blur(); enterReady(true); }
+function resetModeChooser() {
+  $('#result').classList.remove('choosing-mode');
+  $('#modeChoices').hidden = true;
+}
+function openModeChooser() {
+  if (state !== 'result' || S.booth) return;
+  $('#result').classList.add('choosing-mode');
+  $('#modeChoices').hidden = false;
+  $('#modeChoices').querySelector('button[data-mode="ai"]').focus();
+}
+function startInMode(mode) {
+  if (state !== 'result' || !['ai', 'motion', 'mouse'].includes(mode)) return;
+  resetModeChooser();
+  resultSeq++;
+  $('#nameInput').blur();
+  S.mode = mode;
+  store.set('mode', mode);
+  document.querySelectorAll('input[name="mode"]').forEach(el => { el.checked = el.value === mode; });
+  syncTwoUI();
+  Snd.init();
+  Cam.stop();
+  startFlow();
+}
 function saveName() {
   const v = Array.from($('#nameInput').value.trim()).slice(0, 8).join(''); if (!S.booth) store.set('name', v);
   if (!entry) return; const list = allScores(), i = list.findIndex(e => e.at === entry.at && e.s === entry.s);
@@ -1047,6 +1072,9 @@ $('#resume').addEventListener('click', togglePause);
 $('#quit').addEventListener('click', toMenu);
 $('#again').addEventListener('click', () => { Snd.init(); if (S.booth) nextPlayer(); else { resultSeq++; enterReady(false); } });
 $('#toMenu').addEventListener('click', toMenu);
+$('#chooseMode').addEventListener('click', openModeChooser);
+$('#modeChoices').querySelectorAll('button[data-mode]').forEach(button => button.addEventListener('click', () => startInMode(button.dataset.mode)));
+$('#cancelModeChoice').addEventListener('click', () => { resetModeChooser(); $('#chooseMode').focus(); });
 $('#nameInput').addEventListener('input', () => { saveName(); autoT = Math.max(autoT, 8); });
 $('#nameInput').addEventListener('blur', () => { if (state === 'result') autoT = Math.max(autoT, 5); });
 $('#bPause').addEventListener('click', togglePause);

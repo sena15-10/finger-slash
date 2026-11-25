@@ -181,7 +181,14 @@
       <p class="hint">本名は入れないでね（この端末にだけ記録）</p>
       <div class="r-btns">
         <button id="again" class="gbtn" type="button"><span>つぎの人へ</span></button>
+        <button id="chooseMode" class="gbtn dark" type="button"><span>別のモードで遊ぶ</span></button>
         <button id="toMenu" class="gbtn dark" type="button"><span>メニューへ</span></button>
+      </div>
+      <div id="modeChoices" class="mode-choices" role="group" aria-label="遊ぶモード" hidden>
+        <button class="gbtn sm" type="button" data-mode="ai"><span>AIハンド</span></button>
+        <button class="gbtn sm" type="button" data-mode="motion"><span>モーション</span></button>
+        <button class="gbtn sm" type="button" data-mode="mouse"><span>マウス</span></button>
+        <button id="cancelModeChoice" class="mini" type="button">もどる</button>
       </div>
     </div>
     <div class="autonext rv" id="autoWrap"><span id="autoNext"></span><i><b id="autoBar"></b></i></div>

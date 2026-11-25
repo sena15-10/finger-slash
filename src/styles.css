@@ -308,8 +308,14 @@ h1,h2,p,ol,ul,dl,dd{margin:0;padding:0}
 .name input{width:170px;padding:9px 12px;border:2px solid #2c3874;background:rgba(6,9,30,.85);font:800 15px/1 var(--fb);clip-path:polygon(6px 0,100% 0,calc(100% - 6px) 100%,0 100%)}
 .name input:focus-visible{outline:none;border-color:var(--gold)}
 .r-foot .hint{grid-column:1;font:700 11.5px/1.3 var(--fb);color:var(--muted)}
-.r-btns{grid-column:2;grid-row:1/span 2;display:flex;gap:12px}
-.r-btns .gbtn{padding:12px 20px;font-size:17px}
+.r-btns{grid-column:1/-1;display:flex;gap:10px;justify-content:flex-end}
+.r-btns .gbtn{padding:12px 14px;font-size:15px}
+.mode-choices{grid-column:1/-1;display:flex;justify-content:flex-end;align-items:center;gap:10px}
+.mode-choices .gbtn{padding:10px 14px}
+#result.choosing-mode .r-foot{display:flex;justify-content:center}
+#result.choosing-mode .name,#result.choosing-mode .hint,#result.choosing-mode .r-btns{display:none}
+#result.choosing-mode .mode-choices{display:flex}
+#modeChoices[hidden]{display:none}
 .autonext{position:absolute;left:368px;top:466px;width:556px;display:grid;gap:5px;font:700 12.5px/1 var(--fb);color:var(--muted)}
 .autonext i{display:block;height:5px;background:rgba(255,255,255,.15)}
 .autonext b{display:block;height:100%;width:100%;background:var(--cyan)}
@@ -317,7 +323,7 @@ h1,h2,p,ol,ul,dl,dd{margin:0;padding:0}
 .rv.show{opacity:1;transform:none}
 #result.shake{animation:shk .32s}
 @keyframes shk{0%,100%{transform:none}20%{transform:translate(-8px,4px)}40%{transform:translate(7px,-5px)}60%{transform:translate(-5px,3px)}80%{transform:translate(3px,-2px)}}
-#stage.booth #toMenu,#stage:not(.booth) .autonext{display:none}
+#stage.booth #toMenu,#stage.booth #chooseMode,#stage:not(.booth) .autonext{display:none}
 
 /* ---------- その他 ---------- */
 #bar{position:absolute;right:12px;bottom:10px;display:none;gap:6px;z-index:9}
