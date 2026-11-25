@@ -34,7 +34,7 @@ const TUNING = {
     minSpeed: 220,
     bonus: 500,
     radius: 96,
-    moveSpeed: 55,
+    moveSpeed: 90,
     centerY: 260,
     maxMonsters: 6,
     barHeight: 10,
