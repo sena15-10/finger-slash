@@ -185,7 +185,7 @@ async function loadLandmarker() {
         let lm;
         try {
           lm = await withTimeout(mod.HandLandmarker.createFromOptions(fileset, {
-            baseOptions: { modelAssetBuffer: model.slice(), delegate }, runningMode: 'VIDEO', numHands: 3,
+            baseOptions: { modelAssetBuffer: model.slice(), delegate }, runningMode: 'VIDEO', numHands: 2,
             minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
           }), kit.timeout, 'init');
         } catch (e) { lastErr = e; continue; }
@@ -214,22 +214,19 @@ async function benchLandmarker(lm) {
 }
 function aiStep(t, dt) {
   if (!AI.lm || !Cam.ready) return;
-  // AIが重いPCでは、何コマかに1回だけ検出して、画面の動きをなめらかに保つ
-  const every = AI.ms > 45 ? 3 : AI.ms > 22 ? 2 : 1;
-  if (frameCount % every !== 0) return;
   const v = Cam.video; if (v.readyState < 2 || v.currentTime === AI.lastVT) return; AI.lastVT = v.currentTime;
   const t0 = performance.now(); let res;
   try { res = AI.lm.detectForVideo(v, t0); AI.errs = 0; }
   catch (e) { if (++AI.errs > 8) { toast('AIがうまく動かないので、モーションモードに切りかえます', 6000); AI.lm = null; AI.p = null; switchToMotion(); } return; }
   AI.ms = lerp(AI.ms, performance.now() - t0, .1);
   if (!AI.slowShown && AI.ms > 60 && frameCount > 120) { AI.slowShown = true; toast('動きがカクカクするときは、「モーション」モードがおすすめです', 6000); }
-  // 極端に重い（1回0.15びょう以上）状態が3びょう続いたら、ゲームが止まらないようにモーションへ
-  AI.slowT = AI.ms > 150 ? (AI.slowT || 0) + Math.max(dt, AI.ms / 1000) : 0;
-  if (AI.slowT > 3) { AI.slowT = 0; toast('このPCではAIの処理が重すぎるので、モーションモードに切りかえました。STAFFメニューから変更できます', 9000); switchToMotion(); return; }
+  // AIの処理が0.1秒をこえる状態が続いたら、モーションモードへ切りかえる
+  AI.slowT = AI.ms > 100 ? (AI.slowT || 0) + Math.max(dt, AI.ms / 1000) : 0;
+  if (AI.slowT > 1) { AI.slowT = 0; toast('このPCではAIの処理が0.1秒をこえるため、モーションモードに切りかえました。STAFFメニューから変更できます', 9000); switchToMotion(); return; }
   // 大きく写っている手（＝前に立っている人の手）から順に2つまで使う
   const all = (res && res.landmarks) ? res.landmarks : [], minPx = S.booth ? TUNING.boothMinHandPx : 0;
   AI.hands = all.map(h => { const pts = h.map(l => mapNorm(l.x, l.y)); return { lm: h, pts, raw: pts, size: Math.hypot(pts[0].x - pts[9].x, pts[0].y - pts[9].y), ok: false }; });
-  predictHands(t, dt * every);
+  predictHands(t, dt);
   const valid = AI.hands.filter(h => h.size >= minPx).sort((a, b) => b.size - a.size).slice(0, 2);
   for (const h of valid) h.ok = true;
   AI.valid = valid.length;
