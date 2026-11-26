@@ -10,28 +10,43 @@ export function createBoss(tuning, arenaWidth) {
     hp: tuning.hp,
     maxHp: tuning.hp,
     heading: angle,
+    speed: tuning.moveSpeed,
     vx: Math.cos(angle) * tuning.moveSpeed,
     vy: Math.sin(angle) * tuning.moveSpeed,
-    turnTimer: tuning.turnInterval,
+    dashTimer: tuning.firstDash,
     hitCooldown: 0,
+    age: 0,
   };
 }
 
-export function updateBoss(boss, deltaSeconds, tuning, arenaWidth, arenaHeight) {
-  if (!boss || boss.hp <= 0) return;
-  boss.hitCooldown = Math.max(0, boss.hitCooldown - deltaSeconds);
-  boss.turnTimer -= deltaSeconds;
-  while (boss.turnTimer <= 0) {
-    boss.heading += tuning.turnAngle;
-    boss.vx = Math.cos(boss.heading) * tuning.moveSpeed;
-    boss.vy = Math.sin(boss.heading) * tuning.moveSpeed;
-    boss.turnTimer += tuning.turnInterval;
-  }
+// HPが減るほど怒って、速く・せわしなく動く（1 = 怒っていない）
+export function bossRage(boss, tuning) {
+  return 1 + tuning.rage * (1 - boss.hp / boss.maxHp);
+}
 
+// ボスの動き: くねくね進みながら、ときどき画面のどこかへ一気にダッシュする。ダッシュのあとは少しずつ減速する
+export function updateBoss(boss, deltaSeconds, tuning, arenaWidth, arenaHeight, random = Math.random) {
+  if (!boss || boss.hp <= 0) return;
+  const dt = deltaSeconds, rage = bossRage(boss, tuning), base = tuning.moveSpeed * rage;
   const left = tuning.radius, right = arenaWidth - tuning.radius;
   const top = tuning.radius, bottom = arenaHeight - tuning.radius;
-  boss.x += boss.vx * deltaSeconds;
-  boss.y += boss.vy * deltaSeconds;
+  boss.age += dt;
+  boss.hitCooldown = Math.max(0, boss.hitCooldown - dt);
+  boss.dashTimer -= dt;
+  if (boss.dashTimer <= 0) {
+    const [a, b] = tuning.dashInterval;
+    boss.dashTimer = (a + (b - a) * random()) / rage;
+    const tx = left + (right - left) * random(), ty = top + (bottom - top) * random();   // 画面のどこかをめざす
+    boss.heading = Math.atan2(ty - boss.y, tx - boss.x);
+    boss.speed = tuning.dashSpeed * rage;
+  }
+  boss.speed = base + (boss.speed - base) * Math.exp(-tuning.dashDecay * dt);
+  boss.heading += Math.sin(boss.age * Math.PI * 2 * tuning.wobbleFreq) * tuning.wobble * dt;   // くねくね
+  boss.vx = Math.cos(boss.heading) * boss.speed;
+  boss.vy = Math.sin(boss.heading) * boss.speed;
+
+  boss.x += boss.vx * dt;
+  boss.y += boss.vy * dt;
   let bounced = false;
   if (boss.x >= right) { boss.x = right; boss.vx = -Math.abs(boss.vx); bounced = true; }
   else if (boss.x <= left) { boss.x = left; boss.vx = Math.abs(boss.vx); bounced = true; }
@@ -47,6 +62,7 @@ export function damageBoss(boss, speed, tuning) {
 
   boss.hp = Math.max(0, boss.hp - tuning.damage);
   boss.hitCooldown = tuning.hitCooldown;
+  boss.dashTimer = Math.min(boss.dashTimer, tuning.hitDashDelay);   // 斬られたら、すぐ逃げる
   const defeated = boss.hp === 0;
   return { applied: true, defeated, bonus: defeated ? tuning.bonus : 0 };
 }

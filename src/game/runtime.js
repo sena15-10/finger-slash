@@ -1018,6 +1018,13 @@ function drawBoss() {
   ctx.save();
   ctx.globalAlpha = .92;
   ctx.translate(boss.x, boss.y);
+  {   // ダッシュの向きに少し伸びて、ふだんはぽよんと弾む
+    const dash = clamp((boss.speed - TUNING.boss.moveSpeed) / Math.max(1, TUNING.boss.dashSpeed - TUNING.boss.moveSpeed), 0, 1);
+    const bob = Math.sin(boss.age * 9) * .05, ang = Math.atan2(boss.vy, boss.vx);
+    ctx.rotate(ang); ctx.scale(1 + dash * .22, 1 - dash * .14); ctx.rotate(-ang);
+    ctx.scale(1 - bob, 1 + bob);
+    if (boss.hitCooldown > 0) ctx.translate((Math.random() - .5) * 8, 0);   // 斬られた瞬間ぶるっとふるえる
+  }
   if (SPR.boss) {
     ctx.drawImage(SPR.boss, -radius, -radius, radius * 2, radius * 2);
   } else {

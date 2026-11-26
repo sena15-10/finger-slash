@@ -35,27 +35,41 @@ test('boss patrol remains inside the arena bounds', () => {
   assert.ok(boss.vy < 0);
 });
 
-test('boss follows diagonal paths and changes direction without losing speed', () => {
+test('boss dashes toward new points, slows down afterward, and gets faster when hurt', () => {
   const boss = createBoss(TUNING.boss, 960);
-  const start = { vx: boss.vx, vy: boss.vy };
-  const startSpeed = Math.hypot(start.vx, start.vy);
-  assert.notEqual(start.vx, 0);
-  assert.notEqual(start.vy, 0);
-  updateBoss(boss, TUNING.boss.turnInterval, TUNING.boss, 960, 540);
-  assert.notEqual(boss.vx, start.vx);
-  assert.notEqual(boss.vy, start.vy);
-  assert.ok(Math.abs(Math.hypot(boss.vx, boss.vy) - startSpeed) < 0.001);
+  assert.notEqual(boss.vx, 0);
+  assert.notEqual(boss.vy, 0);
+  const seq = [0.5, 0.0, 1.0];   // 左上へダッシュ
+  let k = 0; const random = () => seq[k++ % seq.length];
+  boss.x = 480; boss.y = 270;
+  boss.dashTimer = 0.001;
+  updateBoss(boss, 1 / 60, TUNING.boss, 960, 540, random);
+  const dashSpeed = Math.hypot(boss.vx, boss.vy);
+  assert.ok(dashSpeed > TUNING.boss.moveSpeed * 2.5, `dash=${dashSpeed}`);
+  for (let i = 0; i < 30; i++) updateBoss(boss, 1 / 60, TUNING.boss, 960, 540, () => 0.99);
+  assert.ok(Math.hypot(boss.vx, boss.vy) < dashSpeed, 'slows after a dash');
 
-  const patrol = createBoss(TUNING.boss, 960);
-  let bouncedX = false, bouncedY = false;
+  const calm = createBoss(TUNING.boss, 960), angry = createBoss(TUNING.boss, 960);
+  angry.hp = 10;
+  for (const b of [calm, angry]) { b.dashTimer = 99; b.speed = TUNING.boss.moveSpeed; updateBoss(b, 1, TUNING.boss, 960, 540); }
+  assert.ok(Math.hypot(angry.vx, angry.vy) > Math.hypot(calm.vx, calm.vy) * 1.3);
+
+  const hit = createBoss(TUNING.boss, 960);
+  hit.dashTimer = 5;
+  damageBoss(hit, TUNING.boss.minSpeed, TUNING.boss);
+  assert.ok(hit.dashTimer <= TUNING.boss.hitDashDelay, 'runs away right after a hit');
+
+  // 5びょう（ボスが出ている時間）のあいだに、画面から出ずに広く動き回る
+  let seed = 7; const seeded = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const patrol = createBoss(TUNING.boss, 960), r = TUNING.boss.radius;
+  let minX = 960, maxX = 0, minY = 540, maxY = 0;
   for (let frame = 0; frame < 300; frame++) {
-    const oldX = patrol.x, oldY = patrol.y;
-    updateBoss(patrol, 1 / 60, TUNING.boss, 960, 540);
-    if (patrol.x !== oldX && (patrol.x === TUNING.boss.radius || patrol.x === 960 - TUNING.boss.radius)) bouncedX = true;
-    if (patrol.y !== oldY && (patrol.y === TUNING.boss.radius || patrol.y === 540 - TUNING.boss.radius)) bouncedY = true;
+    updateBoss(patrol, 1 / 60, TUNING.boss, 960, 540, seeded);
+    assert.ok(patrol.x >= r && patrol.x <= 960 - r && patrol.y >= r && patrol.y <= 540 - r);
+    minX = Math.min(minX, patrol.x); maxX = Math.max(maxX, patrol.x); minY = Math.min(minY, patrol.y); maxY = Math.max(maxY, patrol.y);
   }
-  assert.equal(bouncedX, true);
-  assert.equal(bouncedY, true);
+  assert.ok(maxX - minX > (960 - 2 * r) * 0.5, `x range ${maxX - minX}`);
+  assert.ok(maxY - minY > (540 - 2 * r) * 0.5, `y range ${maxY - minY}`);
 });
 
 test('enemy attacks are suppressed while the boss is alive', () => {

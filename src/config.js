@@ -37,10 +37,16 @@ const TUNING = {
     minSpeed: 220,
     bonus: 500,
     radius: 96,
-    moveSpeed: 90,
+    moveSpeed: 150,        // ふだんの速さ（px/びょう）
     startAngle: 0.35,
-    turnInterval: 2,
-    turnAngle: 0.2,
+    dashSpeed: 560,        // ダッシュした直後の速さ（px/びょう）
+    dashInterval: [0.8, 1.4],   // ダッシュの間かく（びょう）
+    firstDash: 0.3,        // 登場してから最初のダッシュまで（びょう）
+    dashDecay: 3,          // ダッシュのあと減速する早さ（大きいほどすぐ遅くなる）
+    wobble: 1.6,           // くねくね曲がる強さ
+    wobbleFreq: 1.3,       // くねくねの速さ（1びょうに何回）
+    rage: 0.6,             // HPが0に近づくと、速さとダッシュの回数が最大 1+この値 倍になる
+    hitDashDelay: 0.12,    // 斬られてから逃げるダッシュまでの時間（びょう）
     centerY: 260,
     maxMonsters: 6,
     barHeight: 10,
