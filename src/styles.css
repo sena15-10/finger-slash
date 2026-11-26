@@ -209,6 +209,12 @@ h1,h2,p,ol,ul,dl,dd{margin:0;padding:0}
 .h-fever.on{display:flex}
 .h-fever i{display:block;width:170px;height:10px;background:rgba(255,255,255,.2)}
 .h-fever b{display:block;height:100%;background:linear-gradient(90deg,var(--gold),var(--pink))}
+.h-rev{position:absolute;left:50%;top:132px;transform:translateX(-50%);display:none;align-items:center;gap:8px;font:800 14px/1 var(--fb);color:#ffd23f;text-shadow:var(--ol)}
+.h-rev.on{display:flex}
+.h-rev i{display:block;width:120px;height:8px;background:rgba(255,255,255,.2)}
+.h-rev b{display:block;height:100%;width:0;background:linear-gradient(90deg,#ff4d5e,#ffd23f);transition:width .2s}
+.h-rev.go{color:#fff}
+.h-rev.go b{background:linear-gradient(90deg,#ffd23f,#ffffff);transition:none}
 .h-mode{position:absolute;left:14px;bottom:12px;padding:5px 10px;background:rgba(6,9,30,.6);font:700 12px/1 var(--fb);color:rgba(242,248,255,.75)}
 .h-hint{position:absolute;left:0;right:0;bottom:46px;text-align:center;font:800 19px/1.3 var(--fb);color:#fff;text-shadow:var(--ol);transition:opacity .6s}
 

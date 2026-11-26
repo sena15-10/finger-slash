@@ -19,12 +19,13 @@ const TUNING = {
   },
   attacks: {               // てきの攻撃（火の玉）。スタッフメニューの「てきの攻撃」でオン・オフ
     startAfter: 6,         // ゲーム開始から何びょう後に、攻撃が始まるか
-    interval: { easy: [5, 7], normal: [3.5, 5.5], hard: [2.5, 4] },   // 攻撃と攻撃の間かく（びょう）
+    interval: { easy: [5, 7], normal: [3.5, 5.5], hard: [2.5, 4], extreme: [1.3, 2.2] },   // 攻撃と攻撃の間かく（びょう）
     windup: 0.6,           // 投げる前の「ため」（頭の上に ! が出る時間）
-    flyTime: { easy: 2.2, normal: 1.8, hard: 1.4 },    // 火の玉がとどくまでの時間（長いほど、はじきやすい）
+    flyTime: { easy: 2.2, normal: 1.8, hard: 1.4, extreme: 1.15 },  // 火の玉がとどくまでの時間（長いほど、はじきやすい）
     penaltySeconds: 2,     // 当たったとき へる時間（びょう）
     reflectPts: 30,        // はじき返したときの点数（コンボ倍率がかかる）
-    maxAtOnce: 2,          // 同時に飛んでくる火の玉の上限
+    maxAtOnce: { easy: 2, normal: 2, hard: 2, extreme: 4 },   // 同時に飛んでくる火の玉の上限
+    volley: { extreme: 2 },   // 1回の攻撃で投げてくる火の玉の数（書いていない難易度は1こ）
   },
   boss: {
     appearAt: 5,
@@ -53,10 +54,20 @@ const TUNING = {
     opacity: 0.42,
     color: '#65f5ff',
   },
-  difficulty: {            // spawn:出る間かく(小さいほど多い) speed:速さ bomb:ばくだんの出やすさ pad:当たりの広さ(px)
-    easy:   { spawn: 1.00, speed: 0.85, bomb: 0.05, pad: 24 },
-    normal: { spawn: 0.80, speed: 1.00, bomb: 0.09, pad: 15 },
-    hard:   { spawn: 0.62, speed: 1.20, bomb: 0.14, pad: 9  },
+  difficulty: {            // spawn:出る間かく(小さいほど多い) speed:速さ bomb:ばくだんの出やすさ pad:当たりの広さ(px) maxBombs:同時に出るばくだんの上限
+    easy:    { spawn: 1.00, speed: 0.85, bomb: 0.05, pad: 24, maxBombs: 2 },
+    normal:  { spawn: 0.80, speed: 1.00, bomb: 0.09, pad: 15, maxBombs: 2 },
+    hard:    { spawn: 0.62, speed: 1.20, bomb: 0.14, pad: 9,  maxBombs: 2 },
+    extreme: { spawn: 0.48, speed: 1.35, bomb: 0.26, pad: 6,  maxBombs: 4 },   // 激ムズ
+  },
+  comeback: {              // 逆転ゲージ: ばくだん・火の玉に当たるとたまり、満タンで「逆転タイム」
+    difficulties: ['extreme'],   // 逆転ゲージを使う難易度
+    gaugeMax: 3,           // 何回当たると満タンになるか
+    seconds: 6,            // 逆転タイムの長さ（びょう）
+    mult: 2,               // 逆転タイム中の得点の倍率（コンボ・フィーバーとかけ算）
+    timeBonus: 3,          // 逆転タイムが始まったときに もどる時間（びょう）
+    bombPts: 60,           // 金のばくだんをさわったときの点数（倍率がかかる）
+    blastRadius: 170,      // 金のばくだんの爆発で、まとめてたおせる広さ（px）
   },
 };
 // モンスターのデータ（pts: 点数, hp: たおすまでに必要な回数, spr: 画像にしたときの大きさ）

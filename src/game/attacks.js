@@ -1,4 +1,6 @@
-export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false }) {
+export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, onDamage = () => {} }) {
+// 難易度ごとの値（数字だけ書いてあれば、全部の難易度で同じ）
+const byDiff = (v, d) => (v && typeof v === 'object') ? (v[S.diff] ?? d) : (v ?? d);
 function updateAttacks(dt) {
   if (!S.attack) return;
   if (isBossActive()) { state.shots = []; return; }
@@ -7,13 +9,17 @@ function updateAttacks(dt) {
   if (state.shotT <= 0) {
     const [a, b] = A.interval[S.diff] || [3.5, 5.5];
     state.shotT = rnd(a, b);
-    if (state.timeLeft > fly + A.windup + .6 && state.shots.filter(s => s.st === 'charge' || s.st === 'fly').length < A.maxAtOnce) launchShot();
+    const maxAt = byDiff(A.maxAtOnce, 2), volley = byDiff(A.volley, 1);
+    for (let i = 0; i < volley; i++) {
+      if (state.timeLeft > fly + A.windup + .6 && state.shots.filter(s => s.st === 'charge' || s.st === 'fly').length < maxAt) launchShot();
+    }
   }
   for (const s of state.shots) updateShot(s, dt, A, fly);
   state.shots = state.shots.filter(s => !s.gone);
 }
 function launchShot() {
-  const cand = state.monsters.filter(m => !m.dead && m.age > .3 && !MON[m.type].bad && !MON[m.type].fever && m.x > 90 && m.x < W - 90 && m.y > 70 && m.y < 380);
+  const busy = new Set(state.shots.filter(s => s.st === 'charge').map(s => s.from));   // 同じ敵が2つ同時に投げないように
+  const cand = state.monsters.filter(m => !m.dead && !busy.has(m) && m.age > .3 && !MON[m.type].bad && !MON[m.type].fever && m.x > 90 && m.x < W - 90 && m.y > 70 && m.y < 380);
   const from = cand.length ? pick(cand) : null;   // 画面にいる敵が投げる（いなければ、遠くから飛んでくる）
   const s = { st: 'charge', t: 0, from, x: from ? from.x : rnd(220, W - 220), y: from ? from.y : 150, ox: 0, oy: 0, tx: rnd(170, W - 170), ty: rnd(180, 430), r: 10, vx: 0, vy: 0, gone: false };
   state.shots.push(s); Snd.charge();
@@ -53,6 +59,7 @@ function shotHit(s) {
   state.shake = 1; state.flashRed = .9; burst(s.x, s.y, '#ff7a1a', 36, 480, .9); burst(s.x, s.y, '#ffd23f', 20, 320, .7);
   state.cracks.push(makeCrack(s.x, s.y)); Snd.impact();
   banner('OUCH!', 'bomb', 950, `ひのたまに あたった −${TUNING.attacks.penaltySeconds}びょう`);
+  onDamage();
 }
 function makeCrack(x, y) {   // 画面のガラスに入るヒビ
   const rays = [], n = rndi(7, 10);

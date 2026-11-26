@@ -8,6 +8,7 @@ import { createMotion } from '../input/motion.js';
 import { createAttacks } from './attacks.js';
 import { createBoss, damageBoss, shouldSpawnBoss, updateBoss } from './boss.js';
 import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
+import { addComebackDamage, comebackActive, comebackEnabled, createComeback, tickComeback } from './comeback.js';
 
 
 // ============================================================
@@ -44,9 +45,10 @@ const store = {
 };
 const qs = new URLSearchParams(location.search);
 const oneOf = (v, list, d) => list.includes(v) ? v : d;
+const DIFFS = ['easy', 'normal', 'hard', 'extreme'];
 const S = {
   mode: oneOf(qs.get('mode'), ['ai', 'motion', 'mouse'], oneOf(store.get('mode', 'ai'), ['ai', 'motion', 'mouse'], 'ai')),
-  diff: oneOf(qs.get('diff'), ['easy', 'normal', 'hard'], oneOf(store.get('diff', 'normal'), ['easy', 'normal', 'hard'], 'normal')),
+  diff: oneOf(qs.get('diff'), DIFFS, oneOf(store.get('diff', 'normal'), DIFFS, 'normal')),
   time: clamp(parseInt(qs.get('time') || store.get('time', TUNING.roundSeconds), 10) || TUNING.roundSeconds, 10, 180),
   sound: qs.get('mute') === '1' ? false : !!store.get('sound', true),
   eye: qs.get('eye') === '1',
@@ -309,6 +311,8 @@ let attractT = 0, attractPage = 0, loadTipT = 0, wakeLock = null;
 let shots = [], shotT = 0, reflects = 0, shotHits = 0, cracks = [], attackHinted = false;
 let boss = null, bossAppeared = false, bossDefeated = false;
 let previousGhost = null, ghostSamples = [], ghostNextSample = 0;
+let rev = createComeback();   // 逆転ゲージ（激ムズ）
+const revOn = () => comebackEnabled(TUNING.comeback, S.diff), revActive = () => revOn() && comebackActive(rev);
 const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT });
 const effectState = { get fx() { return fx; }, set fx(value) { fx = value; } };
 const { burst, ring, addText, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
@@ -342,7 +346,7 @@ const attackState = {
   get feverT() { return feverT; },
   set feverT(value) { feverT = value; },
 };
-const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0 });
+const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0, onDamage: () => comebackDamage() });
 
 const screens = { menu: $('#menu'), loading: $('#loading'), ready: $('#ready'), result: $('#result'), paused: $('#pause') };
 function setState(s) {
@@ -394,7 +398,7 @@ function chooseType() {
   if (elapsed > 8 && feverT <= 0 && starCool <= 0) w.star = 3;
   let sum = 0; for (const k in w) sum += w[k]; let r = Math.random() * sum;
   let type = 'slime'; for (const k in w) { r -= w[k]; if (r <= 0) { type = k; break; } }
-  if (type === 'bomb' && monsters.filter(m => m.type === 'bomb').length >= 2) type = 'slime';
+  if (type === 'bomb' && monsters.filter(m => m.type === 'bomb').length >= (D.maxBombs ?? 2)) type = 'slime';
   if (type === 'star') starCool = 16;
   return type;
 }
@@ -417,7 +421,7 @@ function updateMonster(m, dt) {
 }
 
 // ---- 当たり判定とスコア ----
-function multOf(c) { return comboMultiplier(c, feverT > 0); }
+function multOf(c) { return comboMultiplier(c, feverT > 0) * (revActive() ? TUNING.comeback.mult : 1); }
 function maybeSpawnBoss() {
   if (!shouldSpawnBoss(S.boss, bossAppeared, timeLeft, TUNING.boss.appearAt)) return;
   bossAppeared = true;
@@ -495,9 +499,32 @@ function bumpCombo() {
   if (call) { banner(call[1], 'call ' + call[2], 950); Snd.chime(CALLS.indexOf(call)); }
 }
 function bombHit(m) {
+  if (revActive()) { goldBomb(m); return; }
   m.dead = true; bombs++; combo = 0; comboT = 0; timeLeft = Math.max(0, timeLeft - TUNING.bombPenaltySeconds); score = Math.max(0, score - 50);
   shake = 1; flashRed = 1; burst(m.x, m.y, '#ff4d5e', 30, 420, .9); burst(m.x, m.y, '#ffd24d', 18, 300, .7); ring(m.x, m.y, '#ff4d5e', 170);
   banner('BOMB!', 'bomb', 900, `−${TUNING.bombPenaltySeconds}びょう`); Snd.bomb();
+  comebackDamage();
+}
+// ---- 逆転ゲージ（激ムズ）: ダメージを受けるとたまり、満タンで「逆転タイム」 ----
+function comebackDamage() {
+  if (!revOn() || !addComebackDamage(rev, TUNING.comeback)) return;
+  const C = TUNING.comeback;
+  timeLeft += C.timeBonus;
+  banner('逆転タイム!!', 'fever band', 1700, `${C.seconds}びょう間 とくてん${C.mult}ばい！ ばくだんが金色に`);
+  ring(W / 2, H / 2, '#ffd23f', 260); confetti(40); Snd.star();
+}
+// 逆転タイム中のばくだんは「金のばくだん」。さわると爆発して、まわりの敵をまとめてたおす
+function goldBomb(m) {
+  const C = TUNING.comeback; m.dead = true; kills++;
+  bumpCombo();
+  const pts = C.bombPts * multOf(combo); score += pts;
+  burst(m.x, m.y, '#ffd23f', 34, 460, .9); burst(m.x, m.y, '#ffffff', 16, 320, .6); ring(m.x, m.y, '#ffd23f', C.blastRadius * 2);
+  addText(m.x, m.y - 8, `+${pts}`, '#ffe66b', 34);
+  shake = Math.max(shake, .6); Snd.big();
+  for (const o of monsters) {
+    if (o.dead || Math.hypot(o.x - m.x, o.y - m.y) > C.blastRadius) continue;
+    if (MON[o.type].bad) goldBomb(o); else kill(o);   // となりの金のばくだんも連鎖する
+  }
 }
 // ---- てきの攻撃（火の玉）: 遠くから大きくなりながら飛んでくる。斬ればはじき返せる ----
 async function startFlow() {
@@ -566,7 +593,7 @@ function resetRound() {
   monsters = []; fx = []; score = 0; shown = 0; combo = 0; maxCombo = 0; comboT = 0; kills = 0; bombs = 0; feverT = 0; starCool = 0;
   timeLeft = S.time; elapsed = 0; spawnT = .6; shake = 0; flashRed = 0; hitStop = 0; lastShown = false; lastSec = 99;
   shots = []; cracks = []; shotT = TUNING.attacks.startAfter; reflects = 0; shotHits = 0; attackHinted = false;
-  boss = null; bossAppeared = false; bossDefeated = false;
+  boss = null; bossAppeared = false; bossDefeated = false; rev = createComeback();
   previousGhost = S.ghost ? unpackGhost(store.get('ghost', null), TUNING.ghost) : null;
   ghostSamples = []; ghostNextSample = 0;
 }
@@ -594,6 +621,7 @@ function updatePlay(dt) {
   if (hitStop > 0) { hitStop -= dt; return; }   // 大きな敵をたおした瞬間だけ、ほんの少し止める（手ごたえの演出）
   elapsed += dt; hintT += dt; timeLeft -= dt;
   if (feverT > 0) feverT = Math.max(0, feverT - dt);
+  tickComeback(rev, dt);
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
   maybeSpawnBoss();
   updateBoss(boss, dt, TUNING.boss, W, H);
@@ -607,7 +635,7 @@ function updatePlay(dt) {
   const sec = Math.ceil(timeLeft); if (sec !== lastSec) { lastSec = sec; if (sec <= 5 && sec > 0) Snd.tick(); }
   if (timeLeft <= 0) { timeLeft = 0; finishRound(); }
 }
-function finishRound() { setState('finish'); finT = 0; finWiping = false; Music.stop(); banner('FINISH!', 'finish', 1600); Snd.whistle(); }
+function finishRound() { rev = createComeback(); setState('finish'); finT = 0; finWiping = false; Music.stop(); banner('FINISH!', 'finish', 1600); Snd.whistle(); }
 function updateFinish(dt) {
   finT += dt;
   if (finT >= 1.6 && !finWiping) { finWiping = true; wipeTo(() => { if (state === 'finish') endRound(); }); }
@@ -729,7 +757,7 @@ function togglePause() {
 // ============================================================
 //  プレイ中の表示（HUD）… 値が変わったときだけ書きかえる
 // ============================================================
-const hud = { box: $('#hud'), score: $('#hScore'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), mode: $('#hMode'), hint: $('#hHint'), ghost: $('#hGhost'), ghostText: $('#hGhostText'), ghostBar: $('#hGhostBar') };
+const hud = { box: $('#hud'), score: $('#hScore'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), rev: $('#hRev'), revLbl: $('#hRevLbl'), rbar: $('#hRbar'), mode: $('#hMode'), hint: $('#hHint'), ghost: $('#hGhost'), ghostText: $('#hGhostText'), ghostBar: $('#hGhostBar') };
 const hc = {};
 function setIf(key, v, fn) { if (hc[key] !== v) { hc[key] = v; fn(v); } }
 function updateHUD() {
@@ -745,6 +773,12 @@ function updateHUD() {
   setIf('cbar', Math.round(clamp(comboT / TUNING.comboWindow, 0, 1) * 50), v => { hud.cbar.style.width = (v * 2) + '%'; });
   setIf('fon', feverT > 0, v => hud.fever.classList.toggle('on', v));
   setIf('fbar', Math.round(clamp(feverT / TUNING.feverSeconds, 0, 1) * 50), v => { hud.fbar.style.width = (v * 2) + '%'; });
+  setIf('ron', revOn(), v => hud.rev.classList.toggle('on', v));
+  if (revOn()) {
+    const C = TUNING.comeback, go = revActive();
+    setIf('rgo', go, v => { hud.rev.classList.toggle('go', v); hud.revLbl.textContent = v ? '逆転タイム' : '逆転'; });
+    setIf('rbar', Math.round((go ? rev.t / C.seconds : rev.gauge / C.gaugeMax) * 50), v => { hud.rbar.style.width = (v * 2) + '%'; });
+  }
   setIf('mode', { ai: 'AIハンド', motion: 'モーション', mouse: 'マウス' }[runMode] + (runMode === 'ai' && AI.info ? `（${AI.info.split('/')[1]}）` : ''), v => { hud.mode.textContent = v; });
   const hint = runMode === 'mouse' ? 'マウスでモンスターにさわろう。ばくだんはさわらない！' : runMode === 'motion' ? '手を動かしてモンスターにふれよう。ばくだんはさけて！' : '人さし指でモンスターにさわろう。ばくだんはさけて！';
   setIf('hint', hint, v => { hud.hint.textContent = v; });
@@ -938,9 +972,10 @@ function drawSprite(m, t, img) {
   ctx.restore();
 }
 function drawBody(m, t) {
-  if (m.type === 'bomb') {   // ばくだんは、画像でも「危ない」の赤い輪を必ず出す
-    const pulse = .5 + .5 * Math.sin(t * 8 + m.ph);
-    ctx.strokeStyle = `rgba(255,77,94,${.35 + .4 * pulse})`; ctx.lineWidth = 4; ctx.setLineDash([8, 6]); ctx.lineDashOffset = -t * 30;
+  if (m.type === 'bomb') {   // ばくだんは、画像でも「危ない」の赤い輪を必ず出す（逆転タイム中は金色の輪）
+    const pulse = .5 + .5 * Math.sin(t * 8 + m.ph), gold = revActive();
+    if (gold) { const g = ctx.createRadialGradient(0, 0, 0, 0, 0, m.r * 1.8); g.addColorStop(0, 'rgba(255,230,107,.75)'); g.addColorStop(1, 'rgba(255,210,63,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, m.r * 1.8, 0, TAU); ctx.fill(); }
+    ctx.strokeStyle = gold ? `rgba(255,214,63,${.6 + .4 * pulse})` : `rgba(255,77,94,${.35 + .4 * pulse})`; ctx.lineWidth = 4; ctx.setLineDash([8, 6]); ctx.lineDashOffset = -t * 30;
     ctx.beginPath(); ctx.arc(0, 0, m.r + 10 + pulse * 3, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
   }
   const img = SPR[m.type];
@@ -1115,6 +1150,7 @@ function drawBackground(t) {
   } else { drawArena(t); if (state === 'result') { ctx.fillStyle = 'rgba(4,6,22,.45)'; ctx.fillRect(0, 0, W, H); } }
   ctx.drawImage(vigLayer, 0, 0);
   if (feverT > 0) { ctx.fillStyle = `rgba(255,200,61,${.1 + .06 * Math.sin(t * 6)})`; ctx.fillRect(0, 0, W, H); ctx.strokeStyle = `hsl(${(t * 240) % 360},100%,62%)`; ctx.lineWidth = 9; ctx.strokeRect(4, 4, W - 8, H - 8); }
+  if (revActive() && state === 'play') { ctx.strokeStyle = `rgba(255,214,63,${.6 + .3 * Math.sin(t * 10)})`; ctx.lineWidth = 6; ctx.strokeRect(14, 14, W - 28, H - 28); }
   if (flashRed > 0) { ctx.fillStyle = `rgba(255,40,60,${flashRed * .4})`; ctx.fillRect(0, 0, W, H); }
 }
 // メニューや待機画面のうしろで、ゆっくりただよう飾りのモンスター
@@ -1177,5 +1213,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();
