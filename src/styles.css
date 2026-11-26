@@ -98,8 +98,8 @@ h1,h2,p,ol,ul,dl,dd{margin:0;padding:0}
 .chip input:checked+span{background:linear-gradient(180deg,#0f5d78,#0b2a4c);border-color:var(--cyan)}
 .chip input:focus-visible+span{outline:3px solid var(--gold);outline-offset:2px}
 .chips.sm .chip span{padding:6px 4px;font-size:12.5px}
-.m-start{display:flex;flex-direction:column;align-items:flex-start;gap:10px;margin-top:16px}
-.privacy{font:700 12px/1.55 var(--fb);color:var(--muted)}
+.m-start{display:flex;align-items:center;gap:16px;margin-top:12px}
+.privacy{flex:1;font:700 12px/1.55 var(--fb);color:var(--muted)}
 .note{position:absolute;left:36px;bottom:8px;width:548px;font:700 12px/1.5 var(--fb);color:var(--gold)}
 .m-right{position:absolute;right:22px;top:16px;bottom:16px;width:344px;padding:16px 18px;display:flex;flex-direction:column;gap:8px;animation:rise .45s .1s both}
 .board{list-style:none;display:grid;gap:3px;margin-bottom:4px}
@@ -133,6 +133,8 @@ h1,h2,p,ol,ul,dl,dd{margin:0;padding:0}
 .boss-result[hidden]{display:none}
 .ghost-result{margin:0 0 8px;color:var(--cyan);font:800 18px/1.2 var(--fb)}
 .ghost-result[hidden]{display:none}
+.res-note{position:absolute;right:26px;top:74px;max-width:250px;text-align:right;white-space:pre-line;color:var(--gold);font:800 15px/1.5 var(--fb)}
+.res-note[hidden]{display:none}
 .staffrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font:800 12.5px/1 var(--fb)}
 .keys{font:700 11px/1.4 var(--fb);color:var(--muted)}
 
@@ -299,7 +301,8 @@ h1,h2,p,ol,ul,dl,dd{margin:0;padding:0}
 .r-foot .hint{grid-column:1;font:700 11.5px/1.3 var(--fb);color:var(--muted)}
 .r-btns{grid-column:2;grid-row:1/span 2;display:flex;gap:12px}
 .r-btns .gbtn{padding:12px 20px;font-size:17px}
-.r-pick{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;padding-top:4px}
+.r-pick{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr auto 150px;gap:6px 10px;align-items:center;padding-top:4px}
+.r-pick>.chips:first-of-type{grid-column:2/-1}   /* LEVEL は1行ぜんぶ、2行目に MODE と PLAYERS をならべる */
 .r-pick .olbl{font-size:12px}
 .autonext{position:absolute;left:368px;top:500px;width:556px;display:grid;gap:5px;font:700 12.5px/1 var(--fb);color:var(--muted)}
 .autonext i{display:block;height:5px;background:rgba(255,255,255,.15)}

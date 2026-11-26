@@ -7,9 +7,10 @@ import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
 import { createAttacks } from './attacks.js';
 import { createBoss, damageBoss, punchBoss, shouldSpawnBoss, updateBoss } from './boss.js';
-import { GESTURE_NAMES, classifyHand, consumeGesture, createGestureTracker, gestureReady, updateGesture } from '../input/gesture.js';
+import { GESTURE_NAMES, classifyHand, consumeGesture, createGestureTracker, updateGesture } from '../input/gesture.js';
 import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
 import { addComebackDamage, comebackActive, comebackEnabled, createComeback, tickComeback } from './comeback.js';
+import { decideSpecial, pickCoopHands } from './coop.js';
 
 
 // ============================================================
@@ -58,6 +59,7 @@ const S = {
   attack: qs.has('attack') ? qs.get('attack') !== '0' : store.get('attack', true) !== false,
   boss: qs.has('boss') ? qs.get('boss') !== '0' : store.get('boss', true) !== false,
   ghost: qs.has('ghost') ? qs.get('ghost') !== '0' : store.get('ghostEnabled', true) !== false,
+  coop: qs.has('coop') ? qs.get('coop') === '1' : store.get('coop', false) === true,   // ふたりで きょうりょく
 };
 const diffCfg = () => TUNING.difficulty[S.diff];
 
@@ -229,17 +231,22 @@ function aiStep(t, dt) {
   // 極端に重い（1回0.15びょう以上）状態が3びょう続いたら、ゲームが止まらないようにモーションへ
   AI.slowT = AI.ms > 150 ? (AI.slowT || 0) + Math.max(dt, AI.ms / 1000) : 0;
   if (AI.slowT > 3) { AI.slowT = 0; toast('このPCではAIの処理が重すぎるので、モーションモードに切りかえました。STAFFメニューから変更できます', 9000); switchToMotion(); return; }
-  // 大きく写っている手（＝前に立っている人の手）から順に2つまで使う
+  // 大きく写っている手（＝前に立っている人の手）から順に2つまで使う。ふたりモードでは、画面の左右から1つずつ
   const all = (res && res.landmarks) ? res.landmarks : [], minPx = S.booth ? TUNING.boothMinHandPx : 0;
   AI.hands = all.map(h => { const pts = h.map(l => mapNorm(l.x, l.y)); return { lm: h, pts, raw: pts, size: Math.hypot(pts[0].x - pts[9].x, pts[0].y - pts[9].y), ok: false }; });
   predictHands(t, dt * every);
-  const valid = AI.hands.filter(h => h.size >= minPx).sort((a, b) => b.size - a.size).slice(0, 2);
+  const near = AI.hands.filter(h => h.size >= minPx);
+  const valid = S.coop ? pickCoopHands(near, W) : near.sort((a, b) => b.size - a.size).slice(0, 2);
   for (const h of valid) h.ok = true;
   AI.valid = valid.length;
-  assignHands(valid.map(h => h.pts), t);
-  // 手の形を見て、必殺技を出す（形を作って手を止めると発動）
-  updateGesture(gestureTr, valid.map(h => h.raw), t, TUNING.special);
-  if (state === 'play' && spGauge >= TUNING.special.gaugeMax && gestureReady(gestureTr, TUNING.special) && fireSpecial(gestureTr.kind, gestureTr.x, gestureTr.y)) consumeGesture(gestureTr);
+  const owner = assignHands(valid.map(h => h.pts), t);   // owner[i] = 手 i を受けもつ ゆび（ptrs）の番号
+  // 手の形を見て、必殺技を出す（形を作って手を止めると発動）。手ごとに形を見る
+  gestureTrs.forEach((tr, k) => { const i = owner.indexOf(k); updateGesture(tr, i >= 0 ? [valid[i].raw] : [], t, TUNING.special); });
+  if (state === 'play' && spGauge >= spMax()) {
+    const d = decideSpecial(gestureTrs, TUNING.special, { coop: S.coop, waitSeconds: TUNING.coop.waitSeconds });
+    const [a, b] = d ? d.trackers : [];
+    if (d && fireSpecial(d.kind, a.x, a.y, d.merged ? { x: b.x, y: b.y } : null)) d.trackers.forEach(consumeGesture);
+  }
 }
 // 検出した手の位置は「少し前のコマ」のもの。手を動かしていると、その遅れのぶん点が実際の手からずれて見える。
 // 前回との差から速さを出し、遅れのぶんだけ先に進めた位置を使う（手を止めているときは何も変わらない）
@@ -273,16 +280,23 @@ function ptrMove(p, x, y, t, k) {
   }
   p.miss = 0; p.trail.push({ x: p.x, y: p.y, t }); if (p.trail.length > 16) p.trail.shift();
 }
+// 見つけた手を、ゆび（ptrs）にわりあてる。もどり値: 手ごとの ゆびの番号（わりあてられなかった手は -1）
 function assignHands(hands, t) {
   const tips = hands.map(h => ({ x: clamp(h[8].x, 0, W), y: clamp(h[8].y, 0, H) }));   // 8番 = 人さし指の先
-  const used = new Set();
-  for (const p of ptrs) {
-    if (!p.active) continue; let bi = -1, bd = 1e9;
-    tips.forEach((q, i) => { if (used.has(i)) return; const d = Math.hypot(q.x - p.x, q.y - p.y); if (d < bd) { bd = d; bi = i; } });
+  const owner = tips.map(() => -1);
+  ptrs.forEach((p, k) => {
+    if (!p.active) return; let bi = -1, bd = 1e9;
+    tips.forEach((q, i) => { if (owner[i] >= 0) return; const d = Math.hypot(q.x - p.x, q.y - p.y); if (d < bd) { bd = d; bi = i; } });
     // 止めているときはよく平均して「ぷるぷる」を消し、速く動かしたときはほぼそのまま追いかけて遅れを出さない
-    if (bi >= 0 && bd < 260) { used.add(bi); ptrMove(p, tips[bi].x, tips[bi].y, t, clamp(TUNING.ai.smoothMin + bd / TUNING.ai.smoothDist, TUNING.ai.smoothMin, TUNING.ai.smoothMax)); }
-  }
-  tips.forEach((q, i) => { if (used.has(i)) return; const p = ptrs.find(pp => !pp.active); if (p) { ptrMove(p, q.x, q.y, t, 1); used.add(i); } });
+    if (bi >= 0 && bd < 260) { owner[bi] = k; ptrMove(p, tips[bi].x, tips[bi].y, t, clamp(TUNING.ai.smoothMin + bd / TUNING.ai.smoothDist, TUNING.ai.smoothMin, TUNING.ai.smoothMax)); }
+  });
+  tips.forEach((q, i) => {
+    if (owner[i] >= 0) return;
+    const order = S.coop && q.x >= W / 2 ? [1, 0] : [0, 1];   // ふたりモード: 左の人は水色、右の人はピンクのゆびになる
+    const k = order.find(j => !ptrs[j].active);
+    if (k !== undefined) { ptrMove(ptrs[k], q.x, q.y, t, 1); owner[i] = k; }
+  });
+  return owner;
 }
 function segDist(ax, ay, bx, by, px, py) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy; let t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0; t = clamp(t, 0, 1);
@@ -316,8 +330,10 @@ let shots = [], shotT = 0, reflects = 0, shotHits = 0, cracks = [], attackHinted
 let boss = null, bossAppeared = false, bossDefeated = false;
 let previousGhost = null, ghostSamples = [], ghostNextSample = 0;
 let rev = createComeback();   // 逆転ゲージ（激ムズ）
-let spGauge = 0, barrierT = 0, spFullShown = false, gestureTr = createGestureTracker();   // ジェスチャー必殺技
+let spGauge = 0, barrierT = 0, spFullShown = false, gestureTrs = [createGestureTracker(), createGestureTracker()];   // ジェスチャー必殺技（ゆびごとに手の形を見る）
+let merges = 0, pkills = [0, 0];   // ふたりモード: 合体技を出した回数と、水色・ピンクがそれぞれ斬ってたおした数
 const revOn = () => comebackEnabled(TUNING.comeback, S.diff), revActive = () => revOn() && comebackActive(rev);
+const spMax = () => S.coop ? TUNING.coop.gaugeMax : TUNING.special.gaugeMax;   // 必殺ゲージの満タン
 // assets に bg.mp3（または bgm.mp3 / .ogg / .m4a / .wav）を入れると、プレイ中のBGMになる
 const BGM_URL = qs.get('assets') === '0' ? null : Object.values(import.meta.glob('../../assets/{bg,bgm}.{mp3,ogg,m4a,wav}', { eager: true, query: '?url', import: 'default' }))[0] || null;
 const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT, bgmUrl: BGM_URL });
@@ -421,10 +437,10 @@ function chooseType() {
 }
 function updateSpawner(dt) {
   if (starCool > 0) starCool -= dt;
-  const maxMonsters = boss && boss.hp > 0 ? TUNING.boss.maxMonsters : TUNING.maxMonsters;
+  const maxMonsters = boss && boss.hp > 0 ? TUNING.boss.maxMonsters : S.coop ? TUNING.coop.maxMonsters : TUNING.maxMonsters;
   spawnT -= dt; if (spawnT > 0 || monsters.length >= maxMonsters) return;
   const p = elapsed / S.time, D = diffCfg();
-  spawnT = D.spawn * (1 - .45 * p) * rnd(.75, 1.25) * (feverT > 0 ? .65 : 1);
+  spawnT = D.spawn * (S.coop ? TUNING.coop.spawn : 1) * (1 - .45 * p) * rnd(.75, 1.25) * (feverT > 0 ? .65 : 1);
   const n = (Math.random() < .12 && elapsed > 5) ? rndi(2, 3) : 1;
   for (let i = 0; i < n && monsters.length < maxMonsters; i++) spawn(chooseType());
 }
@@ -440,12 +456,12 @@ function updateMonster(m, dt) {
 // ---- 当たり判定とスコア ----
 function multOf(c) { return comboMultiplier(c, feverT > 0) * (revActive() ? TUNING.comeback.mult : 1); }
 function maybeSpawnBoss() {
-  if (!shouldSpawnBoss(S.boss, bossAppeared, timeLeft, TUNING.boss.appearAt)) return;
+  if (!shouldSpawnBoss(S.boss, bossAppeared, timeLeft, S.coop ? TUNING.coop.bossAppearAt : TUNING.boss.appearAt)) return;
   bossAppeared = true;
-  boss = createBoss(TUNING.boss, W);
+  boss = createBoss(S.coop ? { ...TUNING.boss, hp: Math.round(TUNING.boss.hp * TUNING.coop.bossHp) } : TUNING.boss, W);   // ふたりモードは HPが多い
   if (monsters.length > TUNING.boss.maxMonsters) monsters.length = TUNING.boss.maxMonsters;
   shots = [];
-  banner('キングがあらわれた！', 'warn band', 1800);
+  banner('キングがあらわれた！', 'warn band', 1800, S.coop ? 'ふたりで力を合わせて たおそう！' : '');
   Snd.alarm();
 }
 function onBossHit(result, big = false) {
@@ -499,10 +515,12 @@ function onHit(m, p) {
   m.hp--; m.flash = .15; m.cool = .3;
   addSlash(m.x, m.y, ang, m.r);
   if (m.hp > 0) { burst(m.x, m.y, T.color, 8, 220, .5); Snd.hurt(); shake = Math.max(shake, .25); addText(m.x, m.y - m.r - 8, `あと${m.hp}`, '#fff', 20); return; }
+  m.by = p ? ptrs.indexOf(p) : -1;   // どのゆびが たおしたか（ふたりモードのけっかで使う）
   kill(m, ang);
 }
 function kill(m) {
   const T = MON[m.type]; m.dead = true; kills++; addSpecial(1);
+  if (m.by >= 0) pkills[m.by]++;
   bumpCombo();
   if (T.fever) {
     feverT = Math.min(TUNING.feverSeconds * 1.5, feverT + TUNING.feverSeconds);
@@ -527,12 +545,14 @@ function bombHit(m) {
   comebackDamage();
 }
 // ---- ジェスチャー必殺技: 敵をたおすとゲージがたまり、満タンで ✋パー・✌ピース・✊グー の形を見せて止めると発動 ----
+const GESTURE_ICONS = { open: '✋', peace: '✌', fist: '✊' };
 function addSpecial(n) {
-  const C = TUNING.special; if (spGauge >= C.gaugeMax) return;
-  spGauge = Math.min(C.gaugeMax, spGauge + n);
-  if (spGauge >= C.gaugeMax && !spFullShown && state === 'play') {
+  const max = spMax(); if (spGauge >= max) return;
+  spGauge = Math.min(max, spGauge + n);
+  if (spGauge >= max && !spFullShown && state === 'play') {
     spFullShown = true;
-    banner('必殺技 OK!', 'call c2', 1300, runMode === 'ai' ? '✋ ✌ ✊ の形で 手を止めよう' : '1・2・3 キーで発動');
+    const sub = runMode !== 'ai' ? '1・2・3 キーで発動' : S.coop ? 'ふたりで同じ形をすると 合体技！' : '✋ ✌ ✊ の形で 手を止めよう';
+    banner('必殺技 OK!', 'call c2', 1300, sub);
     Snd.chime(3);
   }
 }
@@ -540,10 +560,12 @@ function defuseBomb(m, label) {   // ばくだんを安全に消す（時間は�
   m.dead = true; burst(m.x, m.y, '#9fb3c8', 16, 260, .6); ring(m.x, m.y, '#7df9ff', 90);
   addText(m.x, m.y - m.r - 10, label, '#7df9ff', 22, 1);
 }
-function fireSpecial(kind, x = W / 2, y = H / 2) {
+// partner: ふたりモードで、もう1人も同じ形をしているときの その手の位置 → 合体技になる
+function fireSpecial(kind, x = W / 2, y = H / 2, partner = null) {
   const C = TUNING.special;
-  if (state !== 'play' || spGauge < C.gaugeMax || !GESTURE_NAMES[kind]) return false;
-  if (kind === 'open') {   // ✋パー「しょうげきは」: まわりの敵をまとめてたおし、ばくだんは消し、火の玉ははじく
+  if (state !== 'play' || spGauge < spMax() || !GESTURE_NAMES[kind]) return false;
+  if (partner && S.coop) { fireMerged(kind, x, y, partner.x, partner.y); merges++; }
+  else if (kind === 'open') {   // ✋パー「しょうげきは」: まわりの敵をまとめてたおし、ばくだんは消し、火の玉ははじく
     ring(x, y, '#2ef2ff', C.waveRadius * 2); ring(x, y, '#ffffff', C.waveRadius * 1.3); burst(x, y, '#2ef2ff', 40, 520, .8);
     for (const m of monsters) {
       if (m.dead || Math.hypot(m.x - x, m.y - y) > C.waveRadius + m.r) continue;
@@ -570,6 +592,45 @@ function fireSpecial(kind, x = W / 2, y = H / 2) {
   }
   spGauge = 0; spFullShown = false;   // 技でたおした敵のぶんは、ゲージに入れない（満タンの間は addSpecial が何もしない）
   return true;
+}
+// ---- 合体技（ふたりモード）: 2人が同時に同じ手の形で止めると、ふつうの技より強くなる ----
+function fireMerged(kind, ax, ay, bx, by) {
+  const C = TUNING.special, M = TUNING.coop, mx = (ax + bx) / 2, my = (ay + by) / 2;
+  const half = Math.hypot(bx - ax, by - ay) / 2;
+  addSlash(mx, my, Math.atan2(by - ay, bx - ax), half / 2.4);   // 2人の手を、光の線でつなぐ
+  for (let i = 0; i <= 6; i++) burst(lerp(ax, bx, i / 6), lerp(ay, by, i / 6), '#ffd23f', 6, 260, .6);
+  ring(mx, my, '#ffd23f', 240); confetti(50);
+  let name;
+  if (kind === 'open') {   // ✋✋ ダブルしょうげきは: 2人の手から大きなしょうげきは ＋ 2人の手をむすぶビーム。火の玉はぜんぶはじく
+    name = 'ダブルしょうげきは';
+    const R = C.waveRadius * M.waveScale;
+    for (const [x, y] of [[ax, ay], [bx, by]]) { ring(x, y, '#2ef2ff', R * 2); burst(x, y, '#2ef2ff', 30, 520, .8); }
+    for (const m of monsters) {
+      if (m.dead) continue;
+      const inWave = Math.hypot(m.x - ax, m.y - ay) <= R + m.r || Math.hypot(m.x - bx, m.y - by) <= R + m.r;
+      if (!inWave && segDist(ax, ay, bx, by, m.x, m.y) > M.beamWidth + m.r) continue;
+      if (MON[m.type].bad) defuseBomb(m, 'ふっとばした！'); else kill(m);
+    }
+    for (const s of shots) if (s.st === 'charge' || s.st === 'fly') reflectShot(s, null);
+    Snd.big(); shake = 1;
+  } else if (kind === 'peace') {   // ✌✌ ダブルバリア: 長いバリア ＋ フィーバー（とくてん2ばい）
+    name = 'ダブルバリア';
+    barrierT = M.barrierSeconds;
+    feverT = Math.min(TUNING.feverSeconds * 1.5, feverT + TUNING.feverSeconds);
+    for (const [x, y] of [[ax, ay], [bx, by]]) ring(x, y, '#7df9ff', 220);
+    Snd.star();
+  } else {   // ✊✊ ダブルゲンコツ: ボスに特大ダメージ。ボスがいないときは、画面じゅうの敵をたおし、ばくだんも消す
+    name = 'ダブルゲンコツ';
+    if (boss && boss.hp > 0) {
+      const result = punchBoss(boss, M.punchDamage, TUNING.boss);
+      ring(boss.x, boss.y, '#ffd23f', TUNING.boss.radius * 3.2); onBossHit(result, true);
+    } else {
+      for (const m of monsters) { if (m.dead) continue; if (MON[m.type].bad) defuseBomb(m, 'ドカン！'); else kill(m); }
+    }
+    Snd.impact(); shake = 1; hitStop = .1;
+  }
+  banner(name + '！', 'call c5', 1400, `ふたりの合体技　${GESTURE_ICONS[kind].repeat(2)}`);
+  Snd.fanfare();
 }
 // ---- 逆転ゲージ（激ムズ）: ダメージを受けるとたまり、満タンで「逆転タイム」 ----
 function comebackDamage() {
@@ -624,10 +685,16 @@ function updateLoading(dt) { loadTipT += dt; if (loadTipT > 3.5) { loadTipT = 0;
 const READY_TEXT = {
   booth: { ai: '手をカメラにかざすとスタート！', motion: '手を大きくふるとスタート！', mouse: 'マウスを動かすとスタート' },
   normal: { ai: '手をカメラにかざすとスタート！', motion: '手を大きくふるとスタート！', mouse: 'マウスを動かすとスタート（タッチはなぞる）' },
+  coop: { ai: 'ふたりで1つずつ 手をかざすとスタート！', motion: 'ふたりで手を大きくふるとスタート！', mouse: 'マウスを動かすとスタート' },
 };
 function setReadyText() {
-  const m = readyLock > 0 ? 'つぎの人、どうぞ！' : READY_TEXT[S.booth ? 'booth' : 'normal'][runMode];
-  if (m !== readyShown) { readyShown = m; $('#readyText').textContent = m; $('#cta').classList.toggle('lock', readyLock > 0); }
+  const m = readyLock > 0 ? (S.coop ? 'つぎの ふたり、どうぞ！' : 'つぎの人、どうぞ！')
+    : S.coop && runMode === 'ai' && AI.valid === 1 ? 'あと ひとり、手をかざしてね！'   // ふたりモードは、2つの手がそろうとスタート
+    : READY_TEXT[S.coop ? 'coop' : S.booth ? 'booth' : 'normal'][runMode];
+  if (m !== readyShown) {
+    readyShown = m; $('#readyText').textContent = m; $('#cta').classList.toggle('lock', readyLock > 0);
+    $('#cta .next').textContent = S.coop ? 'NEXT PLAYERS!' : 'NEXT PLAYER!';
+  }
 }
 // lock=true: 前の人がまだ前にいても、すぐには始まらないように少し待つ
 function enterReady(lock) {
@@ -646,7 +713,7 @@ function updateReady(dt) {
   if (starting) return;
   if (readyLock > 0) { readyLock = Math.max(0, readyLock - dt); readyT = 0; setHold(0); setReadyText(); return; }
   setReadyText();
-  const ok = runMode === 'ai' ? AI.valid > 0 : runMode === 'motion' ? Motion.energy > .012 : ptrs[0].active;
+  const ok = runMode === 'ai' ? AI.valid >= (S.coop ? 2 : 1) : runMode === 'motion' ? Motion.energy > .012 : ptrs[0].active;
   readyT = ok ? readyT + dt : Math.max(0, readyT - dt * 2);
   setHold(readyT / .9);
   if (readyT >= .9) beginGame();
@@ -660,8 +727,9 @@ function resetRound() {
   timeLeft = S.time; elapsed = 0; spawnT = .6; shake = 0; flashRed = 0; hitStop = 0; lastShown = false; lastSec = 99;
   shots = []; cracks = []; shotT = TUNING.attacks.startAfter; reflects = 0; shotHits = 0; attackHinted = false;
   boss = null; bossAppeared = false; bossDefeated = false; rev = createComeback();
-  spGauge = TUNING.special.startGauge; barrierT = 0; spFullShown = false; gestureTr = createGestureTracker();
-  previousGhost = S.ghost ? unpackGhost(store.get('ghost', null), TUNING.ghost) : null;
+  spGauge = TUNING.special.startGauge; barrierT = 0; spFullShown = false; gestureTrs = [createGestureTracker(), createGestureTracker()];
+  merges = 0; pkills = [0, 0];
+  previousGhost = S.ghost ? unpackGhost(store.get(ghostKey(), null), TUNING.ghost) : null;
   ghostSamples = []; ghostNextSample = 0;
 }
 function recordGhostSamples() {
@@ -716,11 +784,17 @@ const SECRETS = [
   'ゲームの敵の速さや数は、プログラムの <b>数字</b> で決まっています。数字を変えると、ゲームが変わるよ。',
   '手の動きをとらえる技術は、<b>手話の認識やスポーツのフォーム分析</b>などにも使われています。',
 ];
-function rankOf(sc) { return rankForScore(sc, S.time, S.diff); }
+function rankOf(sc) { return rankForScore(sc, S.time, S.diff, S.coop ? TUNING.coop.rankScale : 1); }
 // ---- 記録（この端末のブラウザの中だけに保存）----
+// ふたりモードの記録には c: 1 をつけ、ランキングは「ひとり」「ふたり」で分ける（2人のほうが点が出やすいので）
 const dayKey = ts => { const d = new Date(ts || 0); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+const sameStyle = e => !!e.c === S.coop;
+const ghostKey = () => S.coop ? 'ghostCoop' : 'ghost';
+const GHOST_KEYS = ['ghost', 'ghostCoop'];
+const whoBefore = () => S.coop ? '前のペア' : '前の人';
 function allScores() { const l = store.get('scores', []); return Array.isArray(l) ? l.filter(e => e && typeof e.s === 'number') : []; }
 function todayScores() { const k = dayKey(Date.now()); return allScores().filter(e => dayKey(e.at) === k).sort((a, b) => b.s - a.s); }
+function todayStyle() { return todayScores().filter(sameStyle); }
 function saveScores(list) {   // 今日の記録はぜんぶ、ほかの日はベスト50だけ残す
   const k = dayKey(Date.now());
   const td = list.filter(e => dayKey(e.at) === k).slice(-2950), old = list.filter(e => dayKey(e.at) !== k).sort((a, b) => b.s - a.s).slice(0, 50);
@@ -729,26 +803,31 @@ function saveScores(list) {   // 今日の記録はぜんぶ、ほかの日は�
 // ---- けっか画面（順番に出していく）----
 function endRound() {
   Music.stop(); feverT = 0;
-  if (S.ghost && ghostSamples.length) store.set('ghost', packGhost(ghostSamples, TUNING.ghost));
+  if (S.ghost && ghostSamples.length) store.set(ghostKey(), packGhost(ghostSamples, TUNING.ghost));
   const rk = rankOf(score), em = $('#emblem'); $('#rankLetter').textContent = rk; em.dataset.rank = rk;
   $('#resScore').textContent = '0'; $('#resCombo').textContent = String(maxCombo); $('#resKills').textContent = String(kills); $('#resBombs').textContent = String(bombs);
   $('#resReflect').textContent = String(reflects); $('#st4').hidden = !S.attack; $('#rStats').classList.toggle('four', S.attack);
   const bossRemaining = bossAppeared && !bossDefeated && boss && boss.hp > 0;
   $('#bossResult').hidden = !bossRemaining;
   if (bossRemaining) $('#bossResult').textContent = `ボスのHP 残り${Math.round(boss.hp / boss.maxHp * 100)}%`;
-  const ghostResult = S.ghost ? ghostResultText(score, previousGhost) : '';
+  const ghostResult = S.ghost ? ghostResultText(score, previousGhost, whoBefore()) : '';
   $('#ghostResult').hidden = !ghostResult;
   if (ghostResult) $('#ghostResult').textContent = ghostResult;
+  const notes = [];   // スコアの右に出すメモ: ふたりモードの 2人それぞれの たおした数・合体技の回数
+  if (S.coop && pkills[0] + pkills[1] > 0) notes.push(`水色 ${pkills[0]}体・ピンク ${pkills[1]}体`);
+  if (S.coop && runMode === 'ai') notes.push(`合体技 ${merges}回`);
+  $('#resNote').hidden = !notes.length;
+  $('#resNote').textContent = notes.join('\n');
   $('#secret').innerHTML = '<b>AIのひみつ</b>　' + pick(SECRETS);
   const nm = $('#nameInput');
-  const before = S.booth ? todayScores() : allScores().sort((a, b) => b.s - a.s);
-  entryDefault = S.booth ? `プレイヤー${todayScores().length + 1}` : 'ななし';
+  const before = S.booth ? todayStyle() : allScores().filter(sameStyle).sort((a, b) => b.s - a.s);
+  entryDefault = S.booth ? `${S.coop ? 'ペア' : 'プレイヤー'}${todayStyle().length + 1}` : 'ななし';
   nm.value = S.booth ? '' : store.get('name', ''); nm.placeholder = S.booth ? entryDefault : 'ニックネーム';
-  entry = { n: nm.value || entryDefault, s: score, m: runMode, d: S.diff, t: S.time, at: Date.now() }; lastAt = entry.at;
+  entry = { n: nm.value || entryDefault, s: score, m: runMode, d: S.diff, t: S.time, at: Date.now(), ...(S.coop ? { c: 1 } : {}) }; lastAt = entry.at;
   const list = allScores(); list.push(entry); saveScores(list);
-  const td = todayScores(), pos = 1 + td.filter(e => e.s > entry.s).length;
+  const td = todayStyle(), pos = 1 + td.filter(e => e.s > entry.s).length;
   const best = score > 0 && (!before.length || score > before[0].s);
-  $('#todayRank').innerHTML = `本日 <b>${pos}</b>位 ／ ${td.length}人中`;
+  $('#todayRank').innerHTML = `本日 <b>${pos}</b>位 ／ ${td.length}${S.coop ? '組' : '人'}中`;
   $('#newRec').textContent = S.booth ? '本日 1位！' : 'ハイスコア！';
   $('#again').querySelector('span').textContent = S.booth ? 'つぎの人へ' : 'もういっかい';
   for (const el of document.querySelectorAll('#result .rv, #emblem, #newRec')) el.classList.remove('show');
@@ -792,9 +871,10 @@ function updateResult(dt) {
 function nextPlayer() { if (state !== 'result') return; startNext(true); }
 // ---- けっか画面で、次のプレイの むずかしさ・そうさ を えらぶ ----
 let modePicked = false;
+const playersValue = () => S.coop ? '2' : '1';   // 人数のボタンの値（1 = ひとり、2 = ふたりで きょうりょく）
 function syncPick() {   // メニューとけっか画面の、両方のボタンを今の設定に合わせる
-  for (const [name, key] of [['diff', 'diff'], ['rdiff', 'diff'], ['mode', 'mode'], ['rmode', 'mode']]) {
-    document.querySelectorAll(`input[name="${name}"]`).forEach(el => { el.checked = el.value === S[key]; });
+  for (const [name, get] of [['diff', () => S.diff], ['rdiff', () => S.diff], ['mode', () => S.mode], ['rmode', () => S.mode], ['players', playersValue], ['rplayers', playersValue]]) {
+    document.querySelectorAll(`input[name="${name}"]`).forEach(el => { el.checked = el.value === get(); });
   }
 }
 function startNext(lock) {
@@ -823,12 +903,13 @@ function fillBoard(ol, list, emptyText) {
   });
 }
 function renderBoard() {
-  const td = todayScores(), list = S.booth ? td : allScores().sort((a, b) => b.s - a.s);
-  $('#boardTitle').textContent = S.booth ? "TODAY'S BEST" : 'HIGH SCORE';
+  const all = todayScores(), td = all.filter(sameStyle), list = S.booth ? td : allScores().filter(sameStyle).sort((a, b) => b.s - a.s);
+  $('#boardTitle').textContent = (S.booth ? "TODAY'S BEST" : 'HIGH SCORE') + (S.coop ? ' ふたり' : '');
   fillBoard($('#board'), list.slice(0, 8), 'まだ記録がありません');
-  $('#howAtk').hidden = !S.attack;
+  $('#howAtk').hidden = !S.attack; $('#howCoop').hidden = !S.coop;
   fillBoard($('#board2'), td.slice(0, 10), 'まだ記録がありません。1番のりを目指そう！');
-  $('#todayCount').innerHTML = `本日の挑戦者 <b>${td.length}</b>人`; $('#staffCount').textContent = `今日のプレイ数：${td.length}回`;
+  const people = all.reduce((n, e) => n + (e.c ? 2 : 1), 0);   // ふたりモードの記録は2人と数える
+  $('#todayCount').innerHTML = `本日の挑戦者 <b>${people}</b>人`; $('#staffCount').textContent = `今日のプレイ数：${all.length}回`;
 }
 function toMenu() {
   flowId++; resultSeq++; starting = false; Music.stop(); Cam.stop(); Motion.reset(); AI.hands = []; AI.valid = 0; for (const p of ptrs) { p.active = false; p.trail.length = 0; }
@@ -861,24 +942,25 @@ function updateHUD() {
   setIf('cbar', Math.round(clamp(comboT / TUNING.comboWindow, 0, 1) * 50), v => { hud.cbar.style.width = (v * 2) + '%'; });
   setIf('fon', feverT > 0, v => hud.fever.classList.toggle('on', v));
   setIf('fbar', Math.round(clamp(feverT / TUNING.feverSeconds, 0, 1) * 50), v => { hud.fbar.style.width = (v * 2) + '%'; });
-  setIf('spfull', spGauge >= TUNING.special.gaugeMax, v => hud.sp.classList.toggle('ready', v));
-  setIf('spbar', Math.round(clamp(spGauge / TUNING.special.gaugeMax, 0, 1) * 50), v => { hud.spBar.style.width = (v * 2) + '%'; });
-  setIf('spkeys', runMode === 'ai' ? '✋ ✌ ✊' : '1 2 3 キー', v => { hud.spKeys.textContent = v; });
+  setIf('spfull', spGauge >= spMax(), v => hud.sp.classList.toggle('ready', v));
+  setIf('spbar', Math.round(clamp(spGauge / spMax(), 0, 1) * 50), v => { hud.spBar.style.width = (v * 2) + '%'; });
+  setIf('spkeys', runMode !== 'ai' ? '1 2 3 キー' : S.coop ? 'ふたりで ✋✌✊' : '✋ ✌ ✊', v => { hud.spKeys.textContent = v; });
   setIf('ron', revOn(), v => hud.rev.classList.toggle('on', v));
   if (revOn()) {
     const C = TUNING.comeback, go = revActive();
     setIf('rgo', go, v => { hud.rev.classList.toggle('go', v); hud.revLbl.textContent = v ? '逆転タイム' : '逆転'; });
     setIf('rbar', Math.round((go ? rev.t / C.seconds : rev.gauge / C.gaugeMax) * 50), v => { hud.rbar.style.width = (v * 2) + '%'; });
   }
-  setIf('mode', { ai: 'AIハンド', motion: 'モーション', mouse: 'マウス' }[runMode] + (runMode === 'ai' && AI.info ? `（${AI.info.split('/')[1]}）` : ''), v => { hud.mode.textContent = v; });
-  const hint = runMode === 'mouse' ? 'マウスでモンスターにさわろう。ばくだんはさわらない！' : runMode === 'motion' ? '手を動かしてモンスターにふれよう。ばくだんはさけて！' : '人さし指でモンスターにさわろう。ばくだんはさけて！';
+  setIf('mode', { ai: 'AIハンド', motion: 'モーション', mouse: 'マウス' }[runMode] + (runMode === 'ai' && AI.info ? `（${AI.info.split('/')[1]}）` : '') + (S.coop ? '・ふたり' : ''), v => { hud.mode.textContent = v; });
+  const hint = runMode === 'mouse' ? 'マウスでモンスターにさわろう。ばくだんはさわらない！' : runMode === 'motion' ? '手を動かしてモンスターにふれよう。ばくだんはさけて！'
+    : S.coop ? '人さし指を1人1本ずつ使って、ふたりでたおそう！' : '人さし指でモンスターにさわろう。ばくだんはさけて！';
   setIf('hint', hint, v => { hud.hint.textContent = v; });
   setIf('hop', state === 'play' && hintT < 6 ? 1 : 0, v => { hud.hint.style.opacity = String(v); });
   const hasGhost = S.ghost && previousGhost && previousGhost.length > 0;
   setIf('ghost-on', !!hasGhost, v => hud.ghost.classList.toggle('on', v));
   if (hasGhost) {
     const previousScore = Math.round(sampleGhost(previousGhost, elapsed).s);
-    setIf('ghost-text', `前の人 ${previousScore}点 ／ いま ${score}点`, v => { hud.ghostText.textContent = v; });
+    setIf('ghost-text', `${whoBefore()} ${previousScore}点 ／ いま ${score}点`, v => { hud.ghostText.textContent = v; });
     const ratio = Math.round(score / Math.max(1, score, previousScore) * 100);
     setIf('ghost-bar', ratio, v => { hud.ghostBar.style.width = `${v}%`; });
   }
@@ -898,6 +980,7 @@ bindRadios('booth', 'booth', v => v === '1', v => v ? '1' : '0'); bindRadios('vi
 bindRadios('attack', 'attack', v => v === '1', v => v ? '1' : '0');
 bindRadios('boss', 'boss', v => v === '1', v => v ? '1' : '0');
 bindRadios('ghost', 'ghost', v => v === '1', v => v ? '1' : '0', 'ghostEnabled');
+bindRadios('players', 'coop', v => v === '2', v => v ? '2' : '1');
 $('#embedNote').hidden = !embedded;
 function goFull(on) {
   try {
@@ -917,9 +1000,9 @@ $('#goNow').addEventListener('click', () => { if (state === 'ready') { readyLock
 $('#resume').addEventListener('click', togglePause);
 $('#quit').addEventListener('click', toMenu);
 $('#again').addEventListener('click', () => { Snd.init(); if (state === 'result') startNext(S.booth); });
-document.querySelectorAll('input[name="rdiff"], input[name="rmode"]').forEach(el => el.addEventListener('change', () => {
-  const key = el.name === 'rdiff' ? 'diff' : 'mode';
-  S[key] = el.value; store.set(key, el.value); if (key === 'mode') modePicked = true;
+document.querySelectorAll('input[name="rdiff"], input[name="rmode"], input[name="rplayers"]').forEach(el => el.addEventListener('change', () => {
+  if (el.name === 'rplayers') { S.coop = el.value === '2'; store.set('coop', S.coop); }
+  else { const key = el.name === 'rdiff' ? 'diff' : 'mode'; S[key] = el.value; store.set(key, el.value); if (key === 'mode') modePicked = true; }
   syncPick(); renderBoard(); Snd.move(); autoT = Math.max(autoT, 8);   // えらんでいる間は、自動で次へ進まない
 }));
 $('#toMenu').addEventListener('click', toMenu);
@@ -934,7 +1017,7 @@ let resetArm = 0;
 $('#resetToday').addEventListener('click', () => {
   const b = $('#resetToday');
   if (Date.now() - resetArm > 4000) { resetArm = Date.now(); b.textContent = 'もう一度おすと消えます'; setTimeout(() => { if (Date.now() - resetArm >= 3900) b.textContent = '今日の記録をリセット'; }, 4000); return; }
-  resetArm = 0; const k = dayKey(Date.now()); store.set('scores', allScores().filter(e => dayKey(e.at) !== k)); store.set('ghost', null);
+  resetArm = 0; const k = dayKey(Date.now()); store.set('scores', allScores().filter(e => dayKey(e.at) !== k)); for (const g of GHOST_KEYS) store.set(g, null);
   previousGhost = null; ghostSamples = []; ghostNextSample = 0;
   b.textContent = '今日の記録をリセット'; lastAt = 0; renderBoard(); toast('今日の記録をリセットしました', 3000);
 });
@@ -949,9 +1032,10 @@ window.addEventListener('keydown', e => {
   else if (k === 'KeyF') goFull(!document.fullscreenElement);
   else if (k === 'KeyM') { S.sound = !S.sound; store.set('sound', S.sound); Snd.init(); syncBar(); toast(S.sound ? '音 ON' : '音 OFF', 1500); }
   else if (k === 'KeyE') { S.eye = !S.eye; syncBar(); }
-  else if (k === 'Digit1' || k === 'Digit2' || k === 'Digit3') {   // 必殺技をキーで出す（マウス・モーションで遊ぶとき用）
-    const p = ptrs.find(q => q.active);
-    fireSpecial({ Digit1: 'open', Digit2: 'peace', Digit3: 'fist' }[k], p ? p.x : W / 2, p ? p.y : H / 2);
+  else if (k === 'Digit1' || k === 'Digit2' || k === 'Digit3') {   // 必殺技をキーで出す（マウス・モーションで遊ぶとき用。ふたりモードで Shift をおすと合体技）
+    const p = ptrs.find(q => q.active), x = p ? p.x : W / 2, y = p ? p.y : H / 2;
+    const q = ptrs[1].active && ptrs[1] !== p ? ptrs[1] : { x: x < W / 2 ? x + W / 3 : x - W / 3, y };   // あいぼうの手がなければ、となりに置く
+    fireSpecial({ Digit1: 'open', Digit2: 'peace', Digit3: 'fist' }[k], x, y, e.shiftKey ? { x: q.x, y: q.y } : null);
   }
   else if ((k === 'Space' || k === 'Enter') && state === 'menu' && document.activeElement === document.body) { e.preventDefault(); if (S.booth) goFull(true); startFlow(); }
 });
@@ -1155,14 +1239,44 @@ function drawBoss() {
   ctx.strokeRect(barX, barY, barWidth, barHeight);
   txt('スライムキング', boss.x, barY - TUNING.boss.barOffset / 3, 16, '#ffffff', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.9)' });
 }
-// 必殺ゲージが満タンで手の形を見せているとき、手のまわりに「ため」の輪を出す
-function drawGestureCharge() {
-  if (runMode !== 'ai' || spGauge < TUNING.special.gaugeMax || !gestureTr.kind || gestureTr.locked) return;
-  const k = clamp(gestureTr.hold / TUNING.special.holdSeconds, 0, 1), x = gestureTr.x, y = gestureTr.y;
-  ctx.save(); ctx.lineWidth = 7; ctx.lineCap = 'round';
-  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.beginPath(); ctx.arc(x, y, 58, 0, TAU); ctx.stroke();
-  ctx.strokeStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x, y, 58, -Math.PI / 2, -Math.PI / 2 + TAU * k); ctx.stroke();
-  txt({ open: '✋', peace: '✌', fist: '✊' }[gestureTr.kind] + ' ' + GESTURE_NAMES[gestureTr.kind], x, y - 72, 18, '#ffe66b', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.85)' });
+// 必殺ゲージが満タンで手の形を見せているとき、手のまわりに「ため」の輪を出す。
+// ふたりモードで2人が同じ形をしているときは、手と手を いなずまでつなぐ（合体技の「ため」）
+function drawGestureCharge(t) {
+  const C = TUNING.special;
+  if (runMode !== 'ai' || spGauge < spMax()) return;
+  const live = gestureTrs.map((tr, k) => ({ tr, k })).filter(o => o.tr.kind && !o.tr.locked);
+  const pair = S.coop && live.length === 2 && live[0].tr.kind === live[1].tr.kind;
+  if (pair) {
+    const [a, b] = live.map(o => o.tr), k = clamp(Math.min(a.hold, b.hold) / C.holdSeconds, 0, 1);
+    drawLink(a.x, a.y, b.x, b.y, k, t);
+    txt(`合体！ ${GESTURE_ICONS[a.kind].repeat(2)}`, (a.x + b.x) / 2, (a.y + b.y) / 2 - 24, 22, '#ffe66b', 'center', 900, FB, { w: 5, c: 'rgba(6,8,24,.85)' });
+  }
+  for (const { tr, k } of live) {
+    const p = clamp(tr.hold / C.holdSeconds, 0, 1), x = tr.x, y = tr.y;
+    ctx.save(); ctx.lineWidth = 7; ctx.lineCap = 'round';
+    ctx.strokeStyle = S.coop ? ptrs[k].color + '66' : 'rgba(255,255,255,.25)'; ctx.beginPath(); ctx.arc(x, y, 58, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x, y, 58, -Math.PI / 2, -Math.PI / 2 + TAU * p); ctx.stroke();
+    let label = GESTURE_ICONS[tr.kind] + ' ' + GESTURE_NAMES[tr.kind];
+    if (S.coop && !pair && p >= 1) {   // あいぼうを待っている間: 外がわの輪がへっていき、なくなるとひとりで技が出る
+      const w = clamp(1 - (tr.hold - C.holdSeconds) / Math.max(.01, TUNING.coop.waitSeconds), 0, 1);
+      ctx.lineWidth = 4; ctx.strokeStyle = '#ffffff'; ctx.beginPath(); ctx.arc(x, y, 70, -Math.PI / 2, -Math.PI / 2 + TAU * w); ctx.stroke();
+      label = `あいぼうも ${GESTURE_ICONS[tr.kind]}！`;
+    }
+    txt(label, x, y - 82, 18, '#ffe66b', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.85)' });
+    ctx.restore();
+  }
+}
+function drawLink(ax, ay, bx, by, k, t) {   // 2つの手をつなぐ いなずま（k: ため具合 0〜1）
+  const n = 12, dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy) || 1, nx = -dy / len, ny = dx / len;
+  ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const [w, col, a] of [[12, '#ffd23f', .35], [4, '#ffffff', 1]]) {
+    ctx.globalAlpha = (.3 + .7 * k) * a; ctx.strokeStyle = col; ctx.lineWidth = w * (.5 + .5 * k); ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const f = i / n, j = i === 0 || i === n ? 0 : Math.sin(t * 37 + i * 2.3) * Math.cos(t * 23 + i) * 16 * (.4 + k);
+      ctx[i ? 'lineTo' : 'moveTo'](ax + dx * f + nx * j, ay + dy * f + ny * j);
+    }
+    ctx.stroke();
+  }
   ctx.restore();
 }
 function drawHands() {
@@ -1296,7 +1410,7 @@ function render(t) {
     if (state !== 'result') { const fa = state === 'finish' ? clamp(1 - finT / 1.2, 0, 1) : 1; for (const m of monsters) drawMonster(m, t, fa); drawBoss(); for (const s of shots) drawShot(s, t, fa); }
     drawFx();
     if (state !== 'result' && state !== 'finish') drawTrails(t);
-    if (state === 'play') drawGestureCharge();
+    if (state === 'play') drawGestureCharge(t);
   }
   ctx.restore();
   if (cracks.length) drawCracks();   // ヒビは画面のガラスに入るので、ゆれの外で描く
@@ -1336,5 +1450,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, get spGauge() { return spGauge; }, get fx() { return fx; }, set spGauge(v) { spGauge = v; }, get barrierT() { return barrierT; }, get gestureTr() { return gestureTr; }, fireSpecial, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, get spGauge() { return spGauge; }, get fx() { return fx; }, set spGauge(v) { spGauge = v; }, get barrierT() { return barrierT; }, get gestureTr() { return gestureTrs[0]; }, get gestureTrs() { return gestureTrs; }, get merges() { return merges; }, get pkills() { return pkills; }, onHit, fireSpecial, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();

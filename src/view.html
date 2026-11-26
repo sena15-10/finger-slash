@@ -45,6 +45,11 @@
           <label class="chip"><input type="radio" name="time" value="30"><span><em>30</em>びょう</span></label>
           <label class="chip"><input type="radio" name="time" value="45"><span><em>45</em>びょう</span></label>
         </div></div>
+      <div class="opt"><span class="olbl">PLAYERS</span>
+        <div class="chips" role="radiogroup" aria-label="あそぶ人数">
+          <label class="chip"><input type="radio" name="players" value="1"><span>ひとり</span></label>
+          <label class="chip"><input type="radio" name="players" value="2"><span>ふたりで きょうりょく</span></label>
+        </div></div>
       <div class="m-start">
         <button id="play" class="gbtn gold big" type="button"><span>GAME START ▶</span></button>
         <p class="privacy">カメラの映像は、この端末の中だけで使います。録画も送信もしません。</p>
@@ -117,6 +122,7 @@
             <li><span><b>人さし指</b>でモンスターにさわって、たおそう</span></li>
             <li><span><em>ばくだんはさわらない！</em> ほしをとると<b>FEVER</b></span></li>
             <li id="howAtk"><span><em>火の玉</em>は、大きくなる前に<b>斬ってはじき返せ！</b></span></li>
+            <li id="howCoop" hidden><span>ふたりで<b>同じ手の形</b>をして止めると、<b>合体技！</b></span></li>
           </ol></div>
         <div class="a-page"><div><span class="ribbon small violet">MONSTERS</span></div><ul class="dex big" id="dex2"></ul></div>
       </div>
@@ -152,6 +158,7 @@
       <p class="r-score" id="resScore">0</p>
       <p class="boss-result" id="bossResult" hidden></p>
       <p class="ghost-result" id="ghostResult" hidden></p>
+      <p class="res-note" id="resNote" hidden></p>
       <dl class="r-stats" id="rStats">
         <div class="st rv" id="st1"><dt>たおした数</dt><dd id="resKills">0</dd></div>
         <div class="st rv" id="st2"><dt>さいだいコンボ</dt><dd id="resCombo">0</dd></div>
@@ -177,6 +184,11 @@
           <label class="chip"><input type="radio" name="rmode" value="ai"><span>AIハンド</span></label>
           <label class="chip"><input type="radio" name="rmode" value="motion"><span>モーション</span></label>
           <label class="chip"><input type="radio" name="rmode" value="mouse"><span>マウス</span></label>
+        </div>
+        <span class="olbl">PLAYERS</span>
+        <div class="chips sm" role="radiogroup" aria-label="つぎの人数">
+          <label class="chip"><input type="radio" name="rplayers" value="1"><span>ひとり</span></label>
+          <label class="chip"><input type="radio" name="rplayers" value="2"><span>ふたり</span></label>
         </div>
       </div>
       <div class="r-btns">

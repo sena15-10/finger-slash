@@ -79,10 +79,11 @@ export function sampleGhost(samples, time) {
   };
 }
 
-export function ghostResultText(score, samples) {
+// who: くらべる相手のよび方（ふたりモードでは「前のペア」）
+export function ghostResultText(score, samples, who = '前の人') {
   if (!samples || !samples.length) return '';
   const previousScore = samples[samples.length - 1].s;
-  if (score > previousScore) return '前の人をこえた！';
-  if (score < previousScore) return `あと${previousScore - score}点で前の人こえ`;
-  return '前の人と同点！';
+  if (score > previousScore) return `${who}をこえた！`;
+  if (score < previousScore) return `あと${previousScore - score}点で${who}こえ`;
+  return `${who}と同点！`;
 }
