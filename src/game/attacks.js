@@ -1,4 +1,4 @@
-export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, onDamage = () => {} }) {
+export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, onDamage = () => {}, isBarrier = () => false }) {
 // 難易度ごとの値（数字だけ書いてあれば、全部の難易度で同じ）
 const byDiff = (v, d) => (v && typeof v === 'object') ? (v[S.diff] ?? d) : (v ?? d);
 function updateAttacks(dt) {
@@ -37,6 +37,7 @@ function updateShot(s, dt, A, fly) {
   } else if (s.st === 'fly') {
     const k = clamp(s.t / fly, 0, 1);
     s.x = lerp(s.ox, s.tx, k); s.y = lerp(s.oy, s.ty, k); s.r = 10 + 68 * Math.pow(k, 1.7);   // 近づくほど、急に大きく見える
+    if (k >= .8 && isBarrier()) { reflectShot(s, null); addText(s.x, s.y - s.r - 50, 'バリア！', '#7df9ff', 22, 1); return; }   // ✌バリア中は、当たる前に自動ではじく
     if (k >= 1) shotHit(s);
   } else if (s.st === 'back') {
     s.x += s.vx * dt; s.y += s.vy * dt; s.r = Math.max(2, s.r * Math.pow(.08, dt));

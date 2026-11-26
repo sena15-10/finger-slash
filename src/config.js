@@ -68,6 +68,15 @@ const TUNING = {
     hard:    { spawn: 0.62, speed: 1.20, bomb: 0.14, pad: 9,  maxBombs: 2 },
     extreme: { spawn: 0.48, speed: 1.35, bomb: 0.26, pad: 6,  maxBombs: 4 },   // 激ムズ
   },
+  special: {               // ジェスチャー必殺技: 敵をたおすとゲージがたまり、満タンで手の形を見せて止めると発動
+    gaugeMax: 12,          // 何体たおすと満タンになるか
+    startGauge: 4,         // ゲーム開始時のゲージ
+    holdSeconds: 0.4,      // 手の形を見せたまま止める時間（びょう）
+    maxSpeed: 320,         // これより速く手が動いているときは「止めている」とみなさない（px/びょう）
+    waveRadius: 260,       // ✋パー「しょうげきは」がとどく広さ（px）
+    barrierSeconds: 6,     // ✌ピース「バリア」の長さ（びょう）
+    punchDamage: 60,       // ✊グー「ゲンコツ」でボスに与えるダメージ（ボスがいないときは、画面じゅうの敵に1ダメージ）
+  },
   comeback: {              // 逆転ゲージ: ばくだん・火の玉に当たるとたまり、満タンで「逆転タイム」
     difficulties: ['extreme'],   // 逆転ゲージを使う難易度
     gaugeMax: 3,           // 何回当たると満タンになるか
@@ -86,6 +95,7 @@ const TIPS = [
   `TIPS：ほしをとると FEVER！ ${TUNING.feverSeconds}びょう間 得点2倍`,
   'TIPS：ゴーレムは3回あてると100点',
   `TIPS：ばくだんにさわると、時間が${TUNING.bombPenaltySeconds}びょうへるよ`,
+  'TIPS：必殺ゲージがたまったら、✋パー・✌ピース・✊グーの形で 手を止めると必殺技！',
 ];
 
 // ---- AIの読み込み先（先に ./vendor/ を試し、だめなら公式CDN）----

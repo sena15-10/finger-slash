@@ -6,7 +6,8 @@ import { createAudio } from '../audio/audio.js';
 import { createCamera } from '../input/camera.js';
 import { createMotion } from '../input/motion.js';
 import { createAttacks } from './attacks.js';
-import { createBoss, damageBoss, shouldSpawnBoss, updateBoss } from './boss.js';
+import { createBoss, damageBoss, punchBoss, shouldSpawnBoss, updateBoss } from './boss.js';
+import { GESTURE_NAMES, classifyHand, consumeGesture, createGestureTracker, gestureReady, updateGesture } from '../input/gesture.js';
 import { createGhostSample, ghostResultText, packGhost, sampleGhost, unpackGhost } from './ghost.js';
 import { addComebackDamage, comebackActive, comebackEnabled, createComeback, tickComeback } from './comeback.js';
 
@@ -236,6 +237,9 @@ function aiStep(t, dt) {
   for (const h of valid) h.ok = true;
   AI.valid = valid.length;
   assignHands(valid.map(h => h.pts), t);
+  // 手の形を見て、必殺技を出す（形を作って手を止めると発動）
+  updateGesture(gestureTr, valid.map(h => h.raw), t, TUNING.special);
+  if (state === 'play' && spGauge >= TUNING.special.gaugeMax && gestureReady(gestureTr, TUNING.special) && fireSpecial(gestureTr.kind, gestureTr.x, gestureTr.y)) consumeGesture(gestureTr);
 }
 // 検出した手の位置は「少し前のコマ」のもの。手を動かしていると、その遅れのぶん点が実際の手からずれて見える。
 // 前回との差から速さを出し、遅れのぶんだけ先に進めた位置を使う（手を止めているときは何も変わらない）
@@ -312,6 +316,7 @@ let shots = [], shotT = 0, reflects = 0, shotHits = 0, cracks = [], attackHinted
 let boss = null, bossAppeared = false, bossDefeated = false;
 let previousGhost = null, ghostSamples = [], ghostNextSample = 0;
 let rev = createComeback();   // 逆転ゲージ（激ムズ）
+let spGauge = 0, barrierT = 0, spFullShown = false, gestureTr = createGestureTracker();   // ジェスチャー必殺技
 const revOn = () => comebackEnabled(TUNING.comeback, S.diff), revActive = () => revOn() && comebackActive(rev);
 // assets に bg.mp3（または bgm.mp3 / .ogg / .m4a / .wav）を入れると、プレイ中のBGMになる
 const BGM_URL = qs.get('assets') === '0' ? null : Object.values(import.meta.glob('../../assets/{bg,bgm}.{mp3,ogg,m4a,wav}', { eager: true, query: '?url', import: 'default' }))[0] || null;
@@ -348,7 +353,7 @@ const attackState = {
   get feverT() { return feverT; },
   set feverT(value) { feverT = value; },
 };
-const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0, onDamage: () => comebackDamage() });
+const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0, onDamage: () => comebackDamage(), isBarrier: () => barrierT > 0 });
 
 const screens = { menu: $('#menu'), loading: $('#loading'), ready: $('#ready'), result: $('#result'), paused: $('#pause') };
 function setState(s) {
@@ -433,6 +438,20 @@ function maybeSpawnBoss() {
   banner('キングがあらわれた！', 'warn band', 1800);
   Snd.alarm();
 }
+function onBossHit(result, big = false) {
+  burst(boss.x, boss.y, TUNING.boss.color, big ? 34 : 14, big ? 420 : 260, .55);
+  addText(boss.x, boss.y - TUNING.boss.radius, `-${result.damage}`, '#ffffff', big ? 44 : 28);
+  if (result.defeated) {
+    bossDefeated = true;
+    score += result.bonus;
+    ring(boss.x, boss.y, TUNING.boss.color, TUNING.boss.radius * 2);
+    banner('ボスをたおした！', 'call c5', 1700, `+${result.bonus}点`);
+    Snd.big();
+    confetti(70);
+  } else {
+    Snd.hurt();
+  }
+}
 function testHits(dt = 0) {
   if (boss && boss.hp > 0) {
     for (const p of ptrs) {
@@ -441,18 +460,7 @@ function testHits(dt = 0) {
       if (speed < TUNING.boss.minSpeed || segDist(p.ox, p.oy, p.x, p.y, boss.x, boss.y) > TUNING.boss.radius) continue;
       const result = damageBoss(boss, speed, TUNING.boss);
       if (!result.applied) continue;
-      burst(boss.x, boss.y, TUNING.boss.color, 14, 260, .55);
-      addText(boss.x, boss.y - TUNING.boss.radius, `-${TUNING.boss.damage}`, '#ffffff', 28);
-      if (result.defeated) {
-        bossDefeated = true;
-        score += result.bonus;
-        ring(boss.x, boss.y, TUNING.boss.color, TUNING.boss.radius * 2);
-        banner('ボスをたおした！', 'call c5', 1700, `+${result.bonus}点`);
-        Snd.big();
-        confetti(70);
-      } else {
-        Snd.hurt();
-      }
+      onBossHit(result);
       break;
     }
   }
@@ -484,7 +492,7 @@ function onHit(m, p) {
   kill(m, ang);
 }
 function kill(m) {
-  const T = MON[m.type]; m.dead = true; kills++;
+  const T = MON[m.type]; m.dead = true; kills++; addSpecial(1);
   bumpCombo();
   if (T.fever) {
     feverT = Math.min(TUNING.feverSeconds * 1.5, feverT + TUNING.feverSeconds);
@@ -502,10 +510,56 @@ function bumpCombo() {
 }
 function bombHit(m) {
   if (revActive()) { goldBomb(m); return; }
+  if (barrierT > 0) { defuseBomb(m, 'ガード！'); return; }   // ✌バリア中は、ばくだんにさわってもへらない
   m.dead = true; bombs++; combo = 0; comboT = 0; timeLeft = Math.max(0, timeLeft - TUNING.bombPenaltySeconds); score = Math.max(0, score - 50);
   shake = 1; flashRed = 1; burst(m.x, m.y, '#ff4d5e', 30, 420, .9); burst(m.x, m.y, '#ffd24d', 18, 300, .7); ring(m.x, m.y, '#ff4d5e', 170);
   banner('BOMB!', 'bomb', 900, `−${TUNING.bombPenaltySeconds}びょう`); Snd.bomb();
   comebackDamage();
+}
+// ---- ジェスチャー必殺技: 敵をたおすとゲージがたまり、満タンで ✋パー・✌ピース・✊グー の形を見せて止めると発動 ----
+function addSpecial(n) {
+  const C = TUNING.special; if (spGauge >= C.gaugeMax) return;
+  spGauge = Math.min(C.gaugeMax, spGauge + n);
+  if (spGauge >= C.gaugeMax && !spFullShown && state === 'play') {
+    spFullShown = true;
+    banner('必殺技 OK!', 'call c2', 1300, runMode === 'ai' ? '✋ ✌ ✊ の形で 手を止めよう' : '1・2・3 キーで発動');
+    Snd.chime(3);
+  }
+}
+function defuseBomb(m, label) {   // ばくだんを安全に消す（時間はへらない）
+  m.dead = true; burst(m.x, m.y, '#9fb3c8', 16, 260, .6); ring(m.x, m.y, '#7df9ff', 90);
+  addText(m.x, m.y - m.r - 10, label, '#7df9ff', 22, 1);
+}
+function fireSpecial(kind, x = W / 2, y = H / 2) {
+  const C = TUNING.special;
+  if (state !== 'play' || spGauge < C.gaugeMax || !GESTURE_NAMES[kind]) return false;
+  if (kind === 'open') {   // ✋パー「しょうげきは」: まわりの敵をまとめてたおし、ばくだんは消し、火の玉ははじく
+    ring(x, y, '#2ef2ff', C.waveRadius * 2); ring(x, y, '#ffffff', C.waveRadius * 1.3); burst(x, y, '#2ef2ff', 40, 520, .8);
+    for (const m of monsters) {
+      if (m.dead || Math.hypot(m.x - x, m.y - y) > C.waveRadius + m.r) continue;
+      if (MON[m.type].bad) defuseBomb(m, 'ふっとばした！'); else kill(m);
+    }
+    for (const s of shots) if ((s.st === 'charge' || s.st === 'fly') && Math.hypot(s.x - x, s.y - y) <= C.waveRadius + s.r) reflectShot(s, null);
+    banner('しょうげきは！', 'call c4', 1100, '✋ パー'); Snd.big(); shake = Math.max(shake, .8);
+  } else if (kind === 'peace') {   // ✌ピース「バリア」: しばらく、火の玉を自動ではじき、ばくだんも平気になる
+    barrierT = C.barrierSeconds;
+    ring(x, y, '#7df9ff', 200); burst(x, y, '#7df9ff', 24, 300, .6);
+    banner('バリア！', 'call c3', 1100, `✌ ピース　${C.barrierSeconds}びょう 火の玉もばくだんも平気`); Snd.star();
+  } else {   // ✊グー「ゲンコツ」: ボスに大ダメージ。ボスがいないときは、画面じゅうの敵に1ダメージ
+    if (boss && boss.hp > 0) {
+      const result = punchBoss(boss, C.punchDamage, TUNING.boss);
+      ring(boss.x, boss.y, '#ffd23f', TUNING.boss.radius * 2.6); onBossHit(result, true);
+    } else {
+      for (const m of monsters) {
+        if (m.dead || MON[m.type].bad) continue;
+        m.hp--; m.flash = .15;
+        if (m.hp <= 0) kill(m); else addText(m.x, m.y - m.r - 8, `あと${m.hp}`, '#fff', 20);
+      }
+    }
+    banner('ゲンコツ！', 'call c5', 1100, '✊ グー'); Snd.impact(); shake = 1; hitStop = .08;
+  }
+  spGauge = 0; spFullShown = false;   // 技でたおした敵のぶんは、ゲージに入れない（満タンの間は addSpecial が何もしない）
+  return true;
 }
 // ---- 逆転ゲージ（激ムズ）: ダメージを受けるとたまり、満タンで「逆転タイム」 ----
 function comebackDamage() {
@@ -596,6 +650,7 @@ function resetRound() {
   timeLeft = S.time; elapsed = 0; spawnT = .6; shake = 0; flashRed = 0; hitStop = 0; lastShown = false; lastSec = 99;
   shots = []; cracks = []; shotT = TUNING.attacks.startAfter; reflects = 0; shotHits = 0; attackHinted = false;
   boss = null; bossAppeared = false; bossDefeated = false; rev = createComeback();
+  spGauge = TUNING.special.startGauge; barrierT = 0; spFullShown = false; gestureTr = createGestureTracker();
   previousGhost = S.ghost ? unpackGhost(store.get('ghost', null), TUNING.ghost) : null;
   ghostSamples = []; ghostNextSample = 0;
 }
@@ -624,6 +679,7 @@ function updatePlay(dt) {
   elapsed += dt; hintT += dt; timeLeft -= dt;
   if (feverT > 0) feverT = Math.max(0, feverT - dt);
   tickComeback(rev, dt);
+  if (barrierT > 0) barrierT = Math.max(0, barrierT - dt);
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
   maybeSpawnBoss();
   updateBoss(boss, dt, TUNING.boss, W, H);
@@ -637,7 +693,7 @@ function updatePlay(dt) {
   const sec = Math.ceil(timeLeft); if (sec !== lastSec) { lastSec = sec; if (sec <= 5 && sec > 0) Snd.tick(); }
   if (timeLeft <= 0) { timeLeft = 0; finishRound(); }
 }
-function finishRound() { rev = createComeback(); setState('finish'); finT = 0; finWiping = false; Music.stop(); banner('FINISH!', 'finish', 1600); Snd.whistle(); }
+function finishRound() { rev = createComeback(); barrierT = 0; setState('finish'); finT = 0; finWiping = false; Music.stop(); banner('FINISH!', 'finish', 1600); Snd.whistle(); }
 function updateFinish(dt) {
   finT += dt;
   if (finT >= 1.6 && !finWiping) { finWiping = true; wipeTo(() => { if (state === 'finish') endRound(); }); }
@@ -778,7 +834,7 @@ function togglePause() {
 // ============================================================
 //  プレイ中の表示（HUD）… 値が変わったときだけ書きかえる
 // ============================================================
-const hud = { box: $('#hud'), score: $('#hScore'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), rev: $('#hRev'), revLbl: $('#hRevLbl'), rbar: $('#hRbar'), mode: $('#hMode'), hint: $('#hHint'), ghost: $('#hGhost'), ghostText: $('#hGhostText'), ghostBar: $('#hGhostBar') };
+const hud = { box: $('#hud'), score: $('#hScore'), time: $('#hTime'), timeBox: $('#hTimeBox'), ring: $('#hRing'), combo: $('#hCombo'), comboN: $('#hComboN'), mult: $('#hMult'), cbar: $('#hCbar'), fever: $('#hFever'), fbar: $('#hFbar'), sp: $('#hSp'), spBar: $('#hSpBar'), spKeys: $('#hSpKeys'), rev: $('#hRev'), revLbl: $('#hRevLbl'), rbar: $('#hRbar'), mode: $('#hMode'), hint: $('#hHint'), ghost: $('#hGhost'), ghostText: $('#hGhostText'), ghostBar: $('#hGhostBar') };
 const hc = {};
 function setIf(key, v, fn) { if (hc[key] !== v) { hc[key] = v; fn(v); } }
 function updateHUD() {
@@ -794,6 +850,9 @@ function updateHUD() {
   setIf('cbar', Math.round(clamp(comboT / TUNING.comboWindow, 0, 1) * 50), v => { hud.cbar.style.width = (v * 2) + '%'; });
   setIf('fon', feverT > 0, v => hud.fever.classList.toggle('on', v));
   setIf('fbar', Math.round(clamp(feverT / TUNING.feverSeconds, 0, 1) * 50), v => { hud.fbar.style.width = (v * 2) + '%'; });
+  setIf('spfull', spGauge >= TUNING.special.gaugeMax, v => hud.sp.classList.toggle('ready', v));
+  setIf('spbar', Math.round(clamp(spGauge / TUNING.special.gaugeMax, 0, 1) * 50), v => { hud.spBar.style.width = (v * 2) + '%'; });
+  setIf('spkeys', runMode === 'ai' ? '✋ ✌ ✊' : '1 2 3 キー', v => { hud.spKeys.textContent = v; });
   setIf('ron', revOn(), v => hud.rev.classList.toggle('on', v));
   if (revOn()) {
     const C = TUNING.comeback, go = revActive();
@@ -879,6 +938,10 @@ window.addEventListener('keydown', e => {
   else if (k === 'KeyF') goFull(!document.fullscreenElement);
   else if (k === 'KeyM') { S.sound = !S.sound; store.set('sound', S.sound); Snd.init(); syncBar(); toast(S.sound ? '音 ON' : '音 OFF', 1500); }
   else if (k === 'KeyE') { S.eye = !S.eye; syncBar(); }
+  else if (k === 'Digit1' || k === 'Digit2' || k === 'Digit3') {   // 必殺技をキーで出す（マウス・モーションで遊ぶとき用）
+    const p = ptrs.find(q => q.active);
+    fireSpecial({ Digit1: 'open', Digit2: 'peace', Digit3: 'fist' }[k], p ? p.x : W / 2, p ? p.y : H / 2);
+  }
   else if ((k === 'Space' || k === 'Enter') && state === 'menu' && document.activeElement === document.body) { e.preventDefault(); if (S.booth) goFull(true); startFlow(); }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') pauseGame(); if (!document.hidden && state !== 'menu') keepAwake(); });
@@ -1081,13 +1144,24 @@ function drawBoss() {
   ctx.strokeRect(barX, barY, barWidth, barHeight);
   txt('スライムキング', boss.x, barY - TUNING.boss.barOffset / 3, 16, '#ffffff', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.9)' });
 }
+// 必殺ゲージが満タンで手の形を見せているとき、手のまわりに「ため」の輪を出す
+function drawGestureCharge() {
+  if (runMode !== 'ai' || spGauge < TUNING.special.gaugeMax || !gestureTr.kind || gestureTr.locked) return;
+  const k = clamp(gestureTr.hold / TUNING.special.holdSeconds, 0, 1), x = gestureTr.x, y = gestureTr.y;
+  ctx.save(); ctx.lineWidth = 7; ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.beginPath(); ctx.arc(x, y, 58, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x, y, 58, -Math.PI / 2, -Math.PI / 2 + TAU * k); ctx.stroke();
+  txt({ open: '✋', peace: '✌', fist: '✊' }[gestureTr.kind] + ' ' + GESTURE_NAMES[gestureTr.kind], x, y - 72, 18, '#ffe66b', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.85)' });
+  ctx.restore();
+}
 function drawHands() {
   ctx.save(); ctx.lineWidth = 2.5; ctx.lineCap = 'round';
   for (const hh of AI.hands) {
     const pts = hh.pts; ctx.globalAlpha = hh.ok ? 1 : .35;
     ctx.strokeStyle = 'rgba(46,242,255,.9)'; ctx.beginPath(); for (const [a, b] of HAND_LINKS) { ctx.moveTo(pts[a].x, pts[a].y); ctx.lineTo(pts[b].x, pts[b].y); } ctx.stroke();
     for (let i = 0; i < pts.length; i++) { ctx.fillStyle = i === 8 ? '#ff2e88' : '#fff'; ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, i === 8 ? 7 : 3.5, 0, TAU); ctx.fill(); }
-    txt(hh.ok ? '手 21点' : 'とおい手（むし）', pts[0].x, pts[0].y + 26, 13, '#2ef2ff', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.8)' }); ctx.globalAlpha = 1;
+    const shape = hh.ok ? GESTURE_NAMES[classifyHand(hh.raw)] : '';   // AIの目: 見分けた手の形も出す
+    txt(hh.ok ? '手 21点' + (shape ? `・${shape}` : '') : 'とおい手（むし）', pts[0].x, pts[0].y + 26, 13, '#2ef2ff', 'center', 800, FB, { w: 4, c: 'rgba(6,8,24,.8)' }); ctx.globalAlpha = 1;
   }
   ctx.restore();
 }
@@ -1183,6 +1257,10 @@ function drawBackground(t) {
   } else { drawArena(t); if (state === 'result') { ctx.fillStyle = 'rgba(4,6,22,.45)'; ctx.fillRect(0, 0, W, H); } }
   ctx.drawImage(vigLayer, 0, 0);
   if (feverT > 0) { ctx.fillStyle = `rgba(255,200,61,${.1 + .06 * Math.sin(t * 6)})`; ctx.fillRect(0, 0, W, H); ctx.strokeStyle = `hsl(${(t * 240) % 360},100%,62%)`; ctx.lineWidth = 9; ctx.strokeRect(4, 4, W - 8, H - 8); }
+  if (barrierT > 0 && state === 'play') {   // ✌バリア中は、画面のふちが水色に光る
+    const a = barrierT < 1.5 ? (Math.sin(t * 20) > 0 ? .9 : .3) : .55 + .25 * Math.sin(t * 6);   // 終わりぎわは点滅
+    ctx.strokeStyle = `rgba(125,249,255,${a})`; ctx.lineWidth = 10; ctx.strokeRect(24, 24, W - 48, H - 48);
+  }
   if (revActive() && state === 'play') { ctx.strokeStyle = `rgba(255,214,63,${.6 + .3 * Math.sin(t * 10)})`; ctx.lineWidth = 6; ctx.strokeRect(14, 14, W - 28, H - 28); }
   if (flashRed > 0) { ctx.fillStyle = `rgba(255,40,60,${flashRed * .4})`; ctx.fillRect(0, 0, W, H); }
 }
@@ -1207,6 +1285,7 @@ function render(t) {
     if (state !== 'result') { const fa = state === 'finish' ? clamp(1 - finT / 1.2, 0, 1) : 1; for (const m of monsters) drawMonster(m, t, fa); drawBoss(); for (const s of shots) drawShot(s, t, fa); }
     drawFx();
     if (state !== 'result' && state !== 'finish') drawTrails(t);
+    if (state === 'play') drawGestureCharge();
   }
   ctx.restore();
   if (cracks.length) drawCracks();   // ヒビは画面のガラスに入るので、ゆれの外で描く
@@ -1246,5 +1325,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, get spGauge() { return spGauge; }, set spGauge(v) { spGauge = v; }, get barrierT() { return barrierT; }, get gestureTr() { return gestureTr; }, fireSpecial, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();

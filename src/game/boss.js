@@ -60,9 +60,20 @@ export function damageBoss(boss, speed, tuning) {
     return { applied: false, defeated: false, bonus: 0 };
   }
 
-  boss.hp = Math.max(0, boss.hp - tuning.damage);
+  return applyBossDamage(boss, tuning.damage, tuning);
+}
+
+// 必殺技（グー）: 斬る速さやクールタイムに関係なく、大きなダメージを与える
+export function punchBoss(boss, damage, tuning) {
+  if (!boss || boss.hp <= 0) return { applied: false, defeated: false, bonus: 0, damage: 0 };
+  return applyBossDamage(boss, damage, tuning);
+}
+
+function applyBossDamage(boss, damage, tuning) {
+  const dealt = Math.min(boss.hp, damage);
+  boss.hp = Math.max(0, boss.hp - damage);
   boss.hitCooldown = tuning.hitCooldown;
   boss.dashTimer = Math.min(boss.dashTimer, tuning.hitDashDelay);   // 斬られたら、すぐ逃げる
   const defeated = boss.hp === 0;
-  return { applied: true, defeated, bonus: defeated ? tuning.bonus : 0 };
+  return { applied: true, defeated, bonus: defeated ? tuning.bonus : 0, damage: dealt };
 }
