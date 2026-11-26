@@ -20,6 +20,7 @@
     <div class="m-left">
       <h1 class="logo" aria-label="Finger Slash"><span class="l1" aria-hidden="true">FINGER</span><span class="l2" aria-hidden="true">SLASH</span></h1>
       <p class="m-sub">カメラ × AI アクション　<b>人さし指が けん になる！</b></p>
+      <button id="openMod" class="m-mod" type="button"><span>モンスター改造 ▶</span><b id="modBadge" hidden>改造中</b></button>
       <div class="ribbon">MODE SELECT <small>モードをえらぶ</small></div>
       <div class="cards" role="radiogroup" aria-label="モード">
         <label class="card"><input type="radio" name="mode" value="ai"><span class="in"><span class="tag">SELECT</span>
@@ -89,6 +90,17 @@
           </div></div>
         <div class="staffrow"><span id="staffCount">今日のプレイ数：0回</span><button id="resetToday" class="mini" type="button">今日の記録をリセット</button></div>
         <p class="keys">キー操作　S メニュー　F 全画面　M 音　N 次の人</p>
+      </div>
+    </div>
+    <!-- モンスター改造（メニューの上に重ねて出す） -->
+    <div class="m-edit" id="monEdit" role="dialog" aria-label="モンスター改造" hidden>
+      <div class="me-head"><span class="ribbon">MONSTER CUSTOM <small>モンスター改造</small></span>
+        <p>数字を変えると、ゲームが変わる！ ＋ − で ためしてみよう</p></div>
+      <div class="me-grid" id="meGrid"></div>
+      <div class="me-foot">
+        <p class="me-note">変えた数字は、この端末に保存されます。改造しているときの記録は、ランキングが「改造」に分かれます。</p>
+        <button id="meReset" class="gbtn dark sm" type="button"><span>ぜんぶ元にもどす</span></button>
+        <button id="meClose" class="gbtn gold sm" type="button"><span>OK</span></button>
       </div>
     </div>
   </section>

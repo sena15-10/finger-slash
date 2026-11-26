@@ -1,5 +1,6 @@
 import { TUNING, CALLS, TIPS, MP_VERSION, CDN, MODEL_URLS } from '../config.js';
-import { MON } from './monsters.js';
+import { MON, MON_BASE, describe } from './monsters.js';
+import { CUSTOM_FIELDS, CUSTOM_ROWS, applyCustom, defaultCustom, isCustomized, sanitizeCustom, stepCustom } from './custom.js';
 import { comboMultiplier, rankForScore } from './scoring.js';
 import { createEffects } from '../render/effects.js';
 import { createAudio } from '../audio/audio.js';
@@ -62,6 +63,15 @@ const S = {
   coop: qs.has('coop') ? qs.get('coop') === '1' : store.get('coop', false) === true,   // ふたりで きょうりょく
 };
 const diffCfg = () => TUNING.difficulty[S.diff];
+
+// ---- モンスター改造（メニューの「モンスター改造」で変えた数字。この端末に保存）----
+const BOSS_BASE = { ...TUNING.boss };   // 改造する前の、元のボスの設定
+const MON_DEFAULTS = defaultCustom(MON_BASE, BOSS_BASE);
+let monCfg = sanitizeCustom(store.get('monsters', null), MON_DEFAULTS), customOn = false;
+function applyMonCfg() { applyCustom(monCfg, MON, MON_BASE, TUNING.boss, BOSS_BASE); customOn = isCustomized(monCfg, MON_DEFAULTS); }
+applyMonCfg();
+// TIPS の {golem.hp} などを、いまの数字に置きかえる
+const tipText = () => pick(TIPS).replace(/\{(\w+)\.(\w+)\}/g, (_, type, key) => MON[type] ? String(MON[type][key]) : '');
 
 // ---- 画像（assets フォルダにあれば、絵のかわりに使う）----
 const SPR = {};
@@ -408,7 +418,7 @@ function wipeTo(fn) {
 
 // ---- モンスターの出現 ----
 function spawn(type, ov) {
-  const T = MON[type], sp = diffCfg().speed;
+  const T = MON[type], sp = diffCfg().speed * (T.speed || 1);   // むずかしさの速さ × モンスター改造の「速さ」
   const m = { type, r: T.r, hr: T.hr || T.r, hp: T.hp, maxHp: T.hp, x: 0, y: 0, vx: 0, vy: 0, g: 0, age: 0, ph: rnd(0, TAU), flash: 0, cool: 0, dead: false };
   if (type === 'slime' || type === 'bomb' || type === 'star') {
     m.x = rnd(90, W - 90); m.y = H + 40; m.vy = -rnd(560, 700) * sp * (type === 'star' ? .9 : 1); m.g = 520 * sp * sp; m.vx = ((W / 2 - m.x) * rnd(.15, .4)) * sp + rnd(-50, 50);
@@ -429,9 +439,12 @@ function chooseType() {
   if (elapsed > 10 && !monsters.some(m => m.type === 'golem')) w.golem = 7;
   if (elapsed > 5) w.bomb = D.bomb * 100;
   if (elapsed > 8 && feverT <= 0 && starCool <= 0) w.star = 3;
-  let sum = 0; for (const k in w) sum += w[k]; let r = Math.random() * sum;
-  let type = 'slime'; for (const k in w) { r -= w[k]; if (r <= 0) { type = k; break; } }
-  if (type === 'bomb' && monsters.filter(m => m.type === 'bomb').length >= (D.maxBombs ?? 2)) type = 'slime';
+  for (const k in w) w[k] *= MON[k].freq;   // モンスター改造の「出やすさ」（0 なら出ない）
+  const keys = Object.keys(w).filter(k => w[k] > 0);
+  if (!keys.length) return null;   // ぜんぶ「出ない」にしたとき
+  let r = Math.random() * keys.reduce((s, k) => s + w[k], 0), type = keys[0];
+  for (const k of keys) { r -= w[k]; if (r <= 0) { type = k; break; } }
+  if (type === 'bomb' && monsters.filter(m => m.type === 'bomb').length >= (D.maxBombs ?? 2)) type = w.slime > 0 ? 'slime' : null;
   if (type === 'star') starCool = 16;
   return type;
 }
@@ -442,7 +455,7 @@ function updateSpawner(dt) {
   const p = elapsed / S.time, D = diffCfg();
   spawnT = D.spawn * (S.coop ? TUNING.coop.spawn : 1) * (1 - .45 * p) * rnd(.75, 1.25) * (feverT > 0 ? .65 : 1);
   const n = (Math.random() < .12 && elapsed > 5) ? rndi(2, 3) : 1;
-  for (let i = 0; i < n && monsters.length < maxMonsters; i++) spawn(chooseType());
+  for (let i = 0; i < n && monsters.length < maxMonsters; i++) { const type = chooseType(); if (type) spawn(type); }
 }
 function updateMonster(m, dt) {
   m.age += dt; if (m.flash > 0) m.flash -= dt; if (m.cool > 0) m.cool -= dt;
@@ -656,7 +669,7 @@ function goldBomb(m) {
 // ---- てきの攻撃（火の玉）: 遠くから大きくなりながら飛んでくる。斬ればはじき返せる ----
 async function startFlow() {
   const my = ++flowId; Snd.init(); keepAwake();
-  setState('loading'); loadTipT = 0; $('#loadTip').textContent = pick(TIPS);
+  setState('loading'); loadTipT = 0; $('#loadTip').textContent = tipText();
   showLoading('カメラを準備しています…', 'ブラウザに「カメラを使う」と出たら、「許可」をおしてね。', false, true);
   runMode = S.mode;
   if (runMode !== 'mouse') {
@@ -679,7 +692,7 @@ function showLoading(msg, sub, canSkip, canCancel) {
   $('#skipAI').style.display = canSkip ? '' : 'none'; $('#cancelLoad').style.display = canCancel ? '' : 'none';
   $('#loadMeter').style.visibility = canSkip ? 'visible' : 'hidden'; if (canSkip) $('#loadBar').style.width = '0%';
 }
-function updateLoading(dt) { loadTipT += dt; if (loadTipT > 3.5) { loadTipT = 0; $('#loadTip').textContent = pick(TIPS); } }
+function updateLoading(dt) { loadTipT += dt; if (loadTipT > 3.5) { loadTipT = 0; $('#loadTip').textContent = tipText(); } }
 
 // ---- 待機画面 ----
 const READY_TEXT = {
@@ -788,9 +801,10 @@ function rankOf(sc) { return rankForScore(sc, S.time, S.diff, S.coop ? TUNING.co
 // ---- 記録（この端末のブラウザの中だけに保存）----
 // ふたりモードの記録には c: 1 をつけ、ランキングは「ひとり」「ふたり」で分ける（2人のほうが点が出やすいので）
 const dayKey = ts => { const d = new Date(ts || 0); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
-const sameStyle = e => !!e.c === S.coop;
-const ghostKey = () => S.coop ? 'ghostCoop' : 'ghost';
-const GHOST_KEYS = ['ghost', 'ghostCoop'];
+// モンスター改造で遊んだ記録には x: 1 をつけ、ランキングとゴーストを分ける（点数を変えると、くらべられないので）
+const sameStyle = e => !!e.c === S.coop && !!e.x === customOn;
+const ghostKey = () => 'ghost' + (S.coop ? 'Coop' : '') + (customOn ? 'Mod' : '');
+const GHOST_KEYS = ['ghost', 'ghostCoop', 'ghostMod', 'ghostCoopMod'];
 const whoBefore = () => S.coop ? '前のペア' : '前の人';
 function allScores() { const l = store.get('scores', []); return Array.isArray(l) ? l.filter(e => e && typeof e.s === 'number') : []; }
 function todayScores() { const k = dayKey(Date.now()); return allScores().filter(e => dayKey(e.at) === k).sort((a, b) => b.s - a.s); }
@@ -813,9 +827,10 @@ function endRound() {
   const ghostResult = S.ghost ? ghostResultText(score, previousGhost, whoBefore()) : '';
   $('#ghostResult').hidden = !ghostResult;
   if (ghostResult) $('#ghostResult').textContent = ghostResult;
-  const notes = [];   // スコアの右に出すメモ: ふたりモードの 2人それぞれの たおした数・合体技の回数
+  const notes = [];   // スコアの右に出すメモ: ふたりモードの 2人それぞれの たおした数・合体技の回数、モンスター改造中かどうか
   if (S.coop && pkills[0] + pkills[1] > 0) notes.push(`水色 ${pkills[0]}体・ピンク ${pkills[1]}体`);
   if (S.coop && runMode === 'ai') notes.push(`合体技 ${merges}回`);
+  if (customOn) notes.push('改造モンスターで プレイ！');
   $('#resNote').hidden = !notes.length;
   $('#resNote').textContent = notes.join('\n');
   $('#secret').innerHTML = '<b>AIのひみつ</b>　' + pick(SECRETS);
@@ -823,7 +838,7 @@ function endRound() {
   const before = S.booth ? todayStyle() : allScores().filter(sameStyle).sort((a, b) => b.s - a.s);
   entryDefault = S.booth ? `${S.coop ? 'ペア' : 'プレイヤー'}${todayStyle().length + 1}` : 'ななし';
   nm.value = S.booth ? '' : store.get('name', ''); nm.placeholder = S.booth ? entryDefault : 'ニックネーム';
-  entry = { n: nm.value || entryDefault, s: score, m: runMode, d: S.diff, t: S.time, at: Date.now(), ...(S.coop ? { c: 1 } : {}) }; lastAt = entry.at;
+  entry = { n: nm.value || entryDefault, s: score, m: runMode, d: S.diff, t: S.time, at: Date.now(), ...(S.coop ? { c: 1 } : {}), ...(customOn ? { x: 1 } : {}) }; lastAt = entry.at;
   const list = allScores(); list.push(entry); saveScores(list);
   const td = todayStyle(), pos = 1 + td.filter(e => e.s > entry.s).length;
   const best = score > 0 && (!before.length || score > before[0].s);
@@ -904,7 +919,7 @@ function fillBoard(ol, list, emptyText) {
 }
 function renderBoard() {
   const all = todayScores(), td = all.filter(sameStyle), list = S.booth ? td : allScores().filter(sameStyle).sort((a, b) => b.s - a.s);
-  $('#boardTitle').textContent = (S.booth ? "TODAY'S BEST" : 'HIGH SCORE') + (S.coop ? ' ふたり' : '');
+  $('#boardTitle').textContent = (S.booth ? "TODAY'S BEST" : 'HIGH SCORE') + (S.coop ? ' ふたり' : '') + (customOn ? ' 改造' : '');
   fillBoard($('#board'), list.slice(0, 8), 'まだ記録がありません');
   $('#howAtk').hidden = !S.attack; $('#howCoop').hidden = !S.coop;
   fillBoard($('#board2'), td.slice(0, 10), 'まだ記録がありません。1番のりを目指そう！');
@@ -1026,6 +1041,7 @@ syncBar();
 window.addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT' && e.target.type === 'text') { if (e.key === 'Enter') e.target.blur(); return; }
   const k = e.code;
+  if (editorOpen()) { if (k === 'Escape' || k === 'KeyS') openEditor(false); return; }   // モンスター改造を開いている間は、ゲームのキーを使わない
   if (k === 'KeyP') togglePause();
   else if (k === 'Escape' || k === 'KeyS') { if (state === 'play') pauseGame(); else if (state !== 'menu') toMenu(); }
   else if (k === 'KeyN') nextPlayer();
@@ -1045,21 +1061,70 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && sta
 function drawIcon(type, canvas) {
   const dpr = 2, px = canvas.dataset.size | 0 || 48; canvas.width = px * dpr; canvas.height = px * dpr; const c = canvas.getContext('2d'), main = ctx; ctx = c;
   try {
-    const T = MON[type]; c.setTransform(dpr, 0, 0, dpr, 0, 0); c.translate(px / 2, px / 2 + 1);
+    c.setTransform(dpr, 0, 0, dpr, 0, 0); c.translate(px / 2, px / 2 + 1);
+    if (type === 'boss') { const R = TUNING.boss.radius, k = px * .42 / R; c.translate(0, px * .06); c.scale(k, k); drawKing(R); return; }
+    const T = MON_BASE[type];   // ずかんの絵は、改造した大きさに関係なく 同じ大きさで描く
     const k = SPR[type] ? (px * .92) / ((T.spr || 2.6) * T.r) : (px / 48) * ({ golem: .36, bat: .44, bomb: .5 }[type] || .58);
     c.scale(k, k); drawBody({ type, r: T.r, hr: T.hr || T.r, hp: T.hp, maxHp: T.hp, vx: 0, vy: 0, age: 1, ph: 0, flash: 0 }, .3);
   } finally { ctx = main; }
 }
 function drawDexIcons() { document.querySelectorAll('canvas[data-mon]').forEach(c => drawIcon(c.dataset.mon, c)); }
+function renderDexText() { document.querySelectorAll('[data-desc]').forEach(el => { el.textContent = describe(MON[el.dataset.desc]); }); }
+
+// ============================================================
+//  モンスター改造（メニュー）… 体力・点数・大きさ・速さ・出やすさ の数字を変えると、ゲームが変わる
+// ============================================================
+const fmtCustom = (f, v) => f === 'freq' && v === 0 ? '出ない' : (f === 'size' || f === 'speed' || f === 'freq') ? `${v}%` : String(v);
+function buildEditor() {
+  const grid = $('#meGrid'), el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  grid.textContent = '';
+  grid.appendChild(el('span', 'me-h'));
+  for (const F of Object.values(CUSTOM_FIELDS)) { const h = el('span', 'me-h', F.label); h.appendChild(el('small', '', F.sub)); grid.appendChild(h); }
+  for (const { type, fields } of CUSTOM_ROWS) {
+    const label = type === 'boss' ? 'スライムキング' : MON[type].name, name = el('div', 'me-name'), cvs = el('canvas');
+    cvs.dataset.mon = type; cvs.dataset.size = '34'; name.append(cvs, el('b', '', label)); grid.appendChild(name);
+    for (const [f, F] of Object.entries(CUSTOM_FIELDS)) {
+      if (!fields.includes(f)) { grid.appendChild(el('span', 'me-na', '—')); continue; }
+      const st = el('div', 'stp'), minus = el('button', '', '−'), plus = el('button', '', '+');
+      st.dataset.t = type; st.dataset.f = f;
+      for (const [b, d, verb] of [[minus, -1, 'へらす'], [plus, 1, 'ふやす']]) { b.type = 'button'; b.dataset.d = String(d); b.setAttribute('aria-label', `${label}の${F.label}を${verb}`); }
+      st.append(minus, el('output'), plus); grid.appendChild(st);
+    }
+  }
+  drawDexIcons(); updateEditor();
+}
+function updateEditor() {
+  document.querySelectorAll('#meGrid .stp').forEach(st => {
+    const { t, f } = st.dataset, v = monCfg[t][f];
+    st.querySelector('output').textContent = fmtCustom(f, v);
+    st.classList.toggle('changed', v !== MON_DEFAULTS[t][f]);   // 元の数字から変えたところは、金色にする
+    st.querySelector('[data-d="-1"]').disabled = stepCustom(t, f, v, -1) === v;
+    st.querySelector('[data-d="1"]').disabled = stepCustom(t, f, v, 1) === v;
+  });
+  $('#modBadge').hidden = !customOn;
+}
+function saveMonCfg() { store.set('monsters', monCfg); applyMonCfg(); updateEditor(); renderDexText(); renderBoard(); }
+function openEditor(on) { $('#monEdit').hidden = !on; if (on) { updateEditor(); $('#meClose').focus(); } else $('#openMod').focus(); }
+$('#meGrid').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-d]'); if (!btn) return;
+  const { t, f } = btn.closest('.stp').dataset;
+  monCfg[t][f] = stepCustom(t, f, monCfg[t][f], Number(btn.dataset.d));
+  saveMonCfg(); Snd.init(); Snd.move();
+});
+$('#openMod').addEventListener('click', () => { Snd.init(); Snd.select(); openEditor(true); });
+$('#meClose').addEventListener('click', () => { Snd.select(); openEditor(false); });
+$('#meReset').addEventListener('click', () => { monCfg = sanitizeCustom(null, MON_DEFAULTS); saveMonCfg(); Snd.select(); });
+const editorOpen = () => !$('#monEdit').hidden;
+
 (() => {
   for (const [id, size] of [['#dex2', 46]]) {
     const ul = $(id);
     for (const type of ['slime', 'ghost', 'bat', 'golem', 'star', 'bomb']) {
       const li = document.createElement('li'), cvs = document.createElement('canvas'), d = document.createElement('div'), b = document.createElement('b'), s = document.createElement('small');
-      cvs.dataset.mon = type; cvs.dataset.size = String(size); b.textContent = MON[type].name; s.textContent = MON[type].desc; d.append(b, s); li.append(cvs, d); ul.appendChild(li);
+      cvs.dataset.mon = type; cvs.dataset.size = String(size); b.textContent = MON[type].name; s.dataset.desc = type; d.append(b, s); li.append(cvs, d); ul.appendChild(li);
     }
   }
-  drawDexIcons(); renderBoard();
+  buildEditor(); renderDexText(); renderBoard();
 })();
 
 // ============================================================
@@ -1165,7 +1230,10 @@ function drawBody(m, t) {
   const img = SPR[m.type];
   if (img) drawSprite(m, t, img);
   else switch (m.type) { case 'slime': drawSlime(m); break; case 'ghost': drawGhost(m, t); break; case 'bat': drawBat(m, t); break; case 'golem': drawGolem(m); break; case 'bomb': drawBombBody(m, t); break; case 'star': drawStar(m, t); break; }
-  if (m.type === 'golem') for (let i = 0; i < m.maxHp; i++) { ctx.fillStyle = i < m.hp ? '#ffd24d' : 'rgba(0,0,0,.45)'; ctx.beginPath(); ctx.arc((i - (m.maxHp - 1) / 2) * 16, -m.r * 1.25, 5, 0, TAU); ctx.fill(); }
+  if (m.maxHp > 1 && m.type !== 'bomb') {   // 体力が2以上の敵は、頭の上に のこりの体力を出す（多いときはバー）
+    if (m.maxHp <= 6) for (let i = 0; i < m.maxHp; i++) { ctx.fillStyle = i < m.hp ? '#ffd24d' : 'rgba(0,0,0,.45)'; ctx.beginPath(); ctx.arc((i - (m.maxHp - 1) / 2) * 16, -m.r * 1.25, 5, 0, TAU); ctx.fill(); }
+    else { const w = 64, y = -m.r * 1.25 - 4; ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(-w / 2, y, w, 8); ctx.fillStyle = '#ffd24d'; ctx.fillRect(-w / 2, y, w * clamp(m.hp / m.maxHp, 0, 1), 8); }
+  }
 }
 function drawMonster(m, t, alpha = 1) {
   const sp = m.age < .2 ? easeOutBack(m.age / .2) : 1;   // 出てくるとき、ポンとふくらむ
@@ -1194,6 +1262,23 @@ function drawGhostRace() {
   }
   ctx.restore();
 }
+// スライムキングの体（assets/boss.png があれば、その画像）。ボス戦と、モンスター改造の絵で使う
+function drawKing(radius, vx = 0, vy = 0) {
+  if (SPR.boss) { ctx.drawImage(SPR.boss, -radius, -radius, radius * 2, radius * 2); return; }
+  drawSlime({ r: radius, vx, vy });
+  ctx.fillStyle = '#ffd23f';
+  ctx.strokeStyle = '#8b5a00';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-radius * .48, -radius * .76);
+  ctx.lineTo(-radius * .3, -radius * 1.08);
+  ctx.lineTo(0, -radius * .83);
+  ctx.lineTo(radius * .3, -radius * 1.08);
+  ctx.lineTo(radius * .48, -radius * .76);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
 function drawBoss() {
   if (!boss || boss.hp <= 0) return;
   const radius = TUNING.boss.radius;
@@ -1207,23 +1292,7 @@ function drawBoss() {
     ctx.scale(1 - bob, 1 + bob);
     if (boss.hitCooldown > 0) ctx.translate((Math.random() - .5) * 8, 0);   // 斬られた瞬間ぶるっとふるえる
   }
-  if (SPR.boss) {
-    ctx.drawImage(SPR.boss, -radius, -radius, radius * 2, radius * 2);
-  } else {
-    drawSlime({ r: radius, vx: boss.vx, vy: boss.vy });
-    ctx.fillStyle = '#ffd23f';
-    ctx.strokeStyle = '#8b5a00';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(-radius * .48, -radius * .76);
-    ctx.lineTo(-radius * .3, -radius * 1.08);
-    ctx.lineTo(0, -radius * .83);
-    ctx.lineTo(radius * .3, -radius * 1.08);
-    ctx.lineTo(radius * .48, -radius * .76);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-  }
+  drawKing(radius, boss.vx, boss.vy);
   ctx.restore();
 
   const barWidth = radius * 2;
@@ -1450,5 +1519,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, get spGauge() { return spGauge; }, get fx() { return fx; }, set spGauge(v) { spGauge = v; }, get barrierT() { return barrierT; }, get gestureTr() { return gestureTrs[0]; }, get gestureTrs() { return gestureTrs; }, get merges() { return merges; }, get pkills() { return pkills; }, onHit, fireSpecial, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, get spGauge() { return spGauge; }, get fx() { return fx; }, set spGauge(v) { spGauge = v; }, get barrierT() { return barrierT; }, get gestureTr() { return gestureTrs[0]; }, get gestureTrs() { return gestureTrs; }, get merges() { return merges; }, get pkills() { return pkills; }, get monCfg() { return monCfg; }, get customOn() { return customOn; }, chooseType, onHit, fireSpecial, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();
