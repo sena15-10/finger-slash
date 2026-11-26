@@ -163,6 +163,21 @@
     <div class="r-foot rv" id="rFoot">
       <label class="name">なまえ<input id="nameInput" maxlength="8" placeholder="ニックネーム" autocomplete="off"></label>
       <p class="hint">本名は入れないでね（この端末にだけ記録）</p>
+      <div class="r-pick" role="group" aria-label="つぎのプレイ">
+        <span class="olbl">LEVEL</span>
+        <div class="chips sm" role="radiogroup" aria-label="つぎのむずかしさ">
+          <label class="chip"><input type="radio" name="rdiff" value="easy"><span><i>★</i>やさしい</span></label>
+          <label class="chip"><input type="radio" name="rdiff" value="normal"><span><i>★★</i>ふつう</span></label>
+          <label class="chip"><input type="radio" name="rdiff" value="hard"><span><i>★★★</i>むずかしい</span></label>
+          <label class="chip"><input type="radio" name="rdiff" value="extreme"><span><i>☠</i>激ムズ</span></label>
+        </div>
+        <span class="olbl">MODE</span>
+        <div class="chips sm" role="radiogroup" aria-label="つぎのそうさ">
+          <label class="chip"><input type="radio" name="rmode" value="ai"><span>AIハンド</span></label>
+          <label class="chip"><input type="radio" name="rmode" value="motion"><span>モーション</span></label>
+          <label class="chip"><input type="radio" name="rmode" value="mouse"><span>マウス</span></label>
+        </div>
+      </div>
       <div class="r-btns">
         <button id="again" class="gbtn" type="button"><span>つぎの人へ</span></button>
         <button id="toMenu" class="gbtn dark" type="button"><span>メニューへ</span></button>

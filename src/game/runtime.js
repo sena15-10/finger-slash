@@ -686,6 +686,7 @@ function endRound() {
   $('#newRec').textContent = S.booth ? '本日 1位！' : 'ハイスコア！';
   $('#again').querySelector('span').textContent = S.booth ? 'つぎの人へ' : 'もういっかい';
   for (const el of document.querySelectorAll('#result .rv, #emblem, #newRec')) el.classList.remove('show');
+  syncPick(); modePicked = false;
   autoT = TUNING.boothResultSeconds; autoMsg = ''; resultArmed = false; $('#autoNext').textContent = ''; $('#autoBar').style.width = '100%';
   setState('result'); renderBoard();
   const sid = ++resultSeq, res = $('#result');
@@ -722,7 +723,25 @@ function updateResult(dt) {
   $('#autoBar').style.width = (clamp(autoT / TUNING.boothResultSeconds, 0, 1) * 100) + '%';
   if (autoT <= 0) nextPlayer();
 }
-function nextPlayer() { if (state !== 'result') return; resultSeq++; $('#nameInput').blur(); enterReady(true); }
+function nextPlayer() { if (state !== 'result') return; startNext(true); }
+// ---- けっか画面で、次のプレイの むずかしさ・そうさ を えらぶ ----
+let modePicked = false;
+function syncPick() {   // メニューとけっか画面の、両方のボタンを今の設定に合わせる
+  for (const [name, key] of [['diff', 'diff'], ['rdiff', 'diff'], ['mode', 'mode'], ['rmode', 'mode']]) {
+    document.querySelectorAll(`input[name="${name}"]`).forEach(el => { el.checked = el.value === S[key]; });
+  }
+}
+function startNext(lock) {
+  resultSeq++; $('#nameInput').blur();
+  if (modePicked && S.mode !== runMode) { modePicked = false; restartFlow(); return; }   // そうさを変えたときは、カメラ・AIの準備から
+  modePicked = false; enterReady(lock);
+}
+function restartFlow() {
+  flowId++; Music.stop(); Cam.stop(); Motion.reset(); AI.hands = []; AI.valid = 0;
+  for (const p of ptrs) { p.active = false; p.trail.length = 0; }
+  monsters = []; shots = []; cracks = []; fx = []; fxEl.textContent = '';
+  startFlow();
+}
 function saveName() {
   const v = Array.from($('#nameInput').value.trim()).slice(0, 8).join(''); if (!S.booth) store.set('name', v);
   if (!entry) return; const list = allScores(), i = list.findIndex(e => e.at === entry.at && e.s === entry.s);
@@ -827,7 +846,12 @@ $('#cancelLoad').addEventListener('click', toMenu);
 $('#goNow').addEventListener('click', () => { if (state === 'ready') { readyLock = 0; beginGame(); } });
 $('#resume').addEventListener('click', togglePause);
 $('#quit').addEventListener('click', toMenu);
-$('#again').addEventListener('click', () => { Snd.init(); if (S.booth) nextPlayer(); else { resultSeq++; enterReady(false); } });
+$('#again').addEventListener('click', () => { Snd.init(); if (state === 'result') startNext(S.booth); });
+document.querySelectorAll('input[name="rdiff"], input[name="rmode"]').forEach(el => el.addEventListener('change', () => {
+  const key = el.name === 'rdiff' ? 'diff' : 'mode';
+  S[key] = el.value; store.set(key, el.value); if (key === 'mode') modePicked = true;
+  syncPick(); renderBoard(); Snd.move(); autoT = Math.max(autoT, 8);   // えらんでいる間は、自動で次へ進まない
+}));
 $('#toMenu').addEventListener('click', toMenu);
 $('#nameInput').addEventListener('input', () => { saveName(); autoT = Math.max(autoT, 8); });
 $('#nameInput').addEventListener('blur', () => { if (state === 'result') autoT = Math.max(autoT, 5); });
