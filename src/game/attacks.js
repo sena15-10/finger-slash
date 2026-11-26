@@ -1,4 +1,4 @@
-export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, onDamage = () => {}, isBarrier = () => false }) {
+export function createAttacks({ TUNING, MON, S, state, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive = () => false, onDamage = () => {}, isBarrier = () => false, isQuiet = () => false }) {
 // 難易度ごとの値（数字だけ書いてあれば、全部の難易度で同じ）
 const byDiff = (v, d) => (v && typeof v === 'object') ? (v[S.diff] ?? d) : (v ?? d);
 function updateAttacks(dt) {
@@ -23,7 +23,7 @@ function launchShot() {
   const from = cand.length ? pick(cand) : null;   // 画面にいる敵が投げる（いなければ、遠くから飛んでくる）
   const s = { st: 'charge', t: 0, from, x: from ? from.x : rnd(220, W - 220), y: from ? from.y : 150, ox: 0, oy: 0, tx: rnd(170, W - 170), ty: rnd(180, 430), r: 10, vx: 0, vy: 0, gone: false };
   state.shots.push(s); Snd.charge();
-  if (!state.attackHinted) { state.attackHinted = true; banner('ひのたまが くる！', 'warn band', 1700, '大きくなる前に 斬って はじき返せ！'); }
+  if (!state.attackHinted) { state.attackHinted = true; if (!isQuiet()) banner('ひのたまが くる！', 'warn band', 1700, '大きくなる前に 斬って はじき返せ！'); }
   return s;
 }
 function updateShot(s, dt, A, fly) {
@@ -59,7 +59,7 @@ function shotHit(s) {
   state.timeLeft = Math.max(0, state.timeLeft - TUNING.attacks.penaltySeconds);
   state.shake = 1; state.flashRed = .9; burst(s.x, s.y, '#ff7a1a', 36, 480, .9); burst(s.x, s.y, '#ffd23f', 20, 320, .7);
   state.cracks.push(makeCrack(s.x, s.y)); Snd.impact();
-  banner('OUCH!', 'bomb', 950, `ひのたまに あたった −${TUNING.attacks.penaltySeconds}びょう`);
+  if (!isQuiet()) banner('OUCH!', 'bomb', 950, `ひのたまに あたった −${TUNING.attacks.penaltySeconds}びょう`);   // 文字を少なくする表示では、赤いフラッシュとヒビだけ
   onDamage();
 }
 function makeCrack(x, y) {   // 画面のガラスに入るヒビ
@@ -70,7 +70,8 @@ function makeCrack(x, y) {   // 画面のガラスに入るヒビ
     rays.push(pts);
   }
   const rings = [rnd(28, 40), rnd(60, 85)].map(r => ({ r, a0: rnd(0, TAU), span: rnd(1.5, 3.5) }));
-  return { x, y, rays, rings, life: 1.8, max: 1.8 };
+  const life = isQuiet() ? TUNING.quietUi.crackLife : 1.8;   // 文字を少なくする表示では、ヒビをすぐ消して前を見やすく
+  return { x, y, rays, rings, life, max: life };
 }
 // ---- エフェクト ----
   return { updateAttacks, launchShot, reflectShot };

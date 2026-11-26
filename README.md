@@ -62,7 +62,9 @@ Netlify Drop などへ公開するときは、`dist/` の中身をアップロ�
 - 火の玉は1.3〜2.2びょうごとに、2こずつ飛んできます（同時に最大4こ）。
 - **逆転ゲージ**: ばくだんか火の玉に3回当たると「逆転タイム」になります。6びょう間、得点が2倍になり、時間が3びょうもどります。ばくだんは金色に変わり、さわると爆発して、まわりの敵をまとめてたおせます。
 
-数値は `src/config.js` の `TUNING.difficulty.extreme`・`TUNING.attacks`・`TUNING.comeback` で調整できます。
+- 敵や火の玉が多くて画面が見えにくくならないよう、うかぶ文字を少なくしています。「OUCH!」「BOMB!」「GOOD!」などの大きな文字や、+10 などの小さな数字は出さず、50点以上の数字と、ボス・逆転タイム・必殺技の知らせだけを出します。火の玉のヒビもすぐ消えます。
+
+数値は `src/config.js` の `TUNING.difficulty.extreme`・`TUNING.attacks`・`TUNING.comeback`・`TUNING.quietUi` で調整できます。
 
 ## ボス戦
 

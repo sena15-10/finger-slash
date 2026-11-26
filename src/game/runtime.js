@@ -322,7 +322,16 @@ const revOn = () => comebackEnabled(TUNING.comeback, S.diff), revActive = () => 
 const BGM_URL = qs.get('assets') === '0' ? null : Object.values(import.meta.glob('../../assets/{bg,bgm}.{mp3,ogg,m4a,wav}', { eager: true, query: '?url', import: 'default' }))[0] || null;
 const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT, bgmUrl: BGM_URL });
 const effectState = { get fx() { return fx; }, set fx(value) { fx = value; } };
-const { burst, ring, addText, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
+const { burst, ring, addText: addTextRaw, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
+// ---- 文字を少なくする表示（激ムズ）: 敵や火の玉が多いので、画面にうかぶ文字をへらして見やすくする ----
+const quietUi = () => TUNING.quietUi.difficulties.includes(S.diff);
+function addText(x, y, text, ...rest) {
+  if (quietUi()) {   // 大きな点数・ダメージの数字だけ出す（+10 や「あと2」「はじいた！」は出さない）
+    const m = /^[+\-−](\d+)/.exec(text);
+    if (!m || Number(m[1]) < TUNING.quietUi.minTextPoints) return;
+  }
+  addTextRaw(x, y, text, ...rest);
+}
 const attackState = {
   get shots() { return shots; },
   set shots(value) { shots = value; },
@@ -353,7 +362,7 @@ const attackState = {
   get feverT() { return feverT; },
   set feverT(value) { feverT = value; },
 };
-const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0, onDamage: () => comebackDamage(), isBarrier: () => barrierT > 0 });
+const { updateAttacks, launchShot, reflectShot } = createAttacks({ TUNING, MON, S, state: attackState, rnd, rndi, pick, clamp, lerp, TAU, W, H, Snd, banner, bumpCombo, multOf, burst, ring, addSlash, addText, isBossActive: () => !!boss && boss.hp > 0, onDamage: () => comebackDamage(), isBarrier: () => barrierT > 0, isQuiet: () => quietUi() });
 
 const screens = { menu: $('#menu'), loading: $('#loading'), ready: $('#ready'), result: $('#result'), paused: $('#pause') };
 function setState(s) {
@@ -367,6 +376,7 @@ function toast(msg, ms = 4000) { const el = $('#toast'); el.textContent = msg; e
 // ---- 演出（大きな文字）と、画面切りかえのワイプ ----
 const fxEl = $('#fx'), wipeEl = $('#wipe');
 function banner(text, cls, ms, sub) {
+  if (quietUi()) sub = '';   // 文字を少なくする表示では、小さい説明文を出さない
   const el = document.createElement('div'); el.className = 'bn ' + cls; el.style.animationDuration = ms + 'ms';
   if (/\b(call|bomb)\b/.test(cls) && fxEl.querySelector('.bn.band')) el.classList.add('low');   // 帯つきの演出と重ならないように
   const s = document.createElement('span'); s.textContent = text; el.appendChild(s);
@@ -506,14 +516,14 @@ function kill(m) {
 function bumpCombo() {
   combo = (comboT > 0 ? combo : 0) + 1; comboT = TUNING.comboWindow; maxCombo = Math.max(maxCombo, combo);
   const call = CALLS.find(c => c[0] === combo);
-  if (call) { banner(call[1], 'call ' + call[2], 950); Snd.chime(CALLS.indexOf(call)); }
+  if (call) { if (!quietUi()) banner(call[1], 'call ' + call[2], 950); Snd.chime(CALLS.indexOf(call)); }   // GOOD! などは音だけにする
 }
 function bombHit(m) {
   if (revActive()) { goldBomb(m); return; }
   if (barrierT > 0) { defuseBomb(m, 'ガード！'); return; }   // ✌バリア中は、ばくだんにさわってもへらない
   m.dead = true; bombs++; combo = 0; comboT = 0; timeLeft = Math.max(0, timeLeft - TUNING.bombPenaltySeconds); score = Math.max(0, score - 50);
   shake = 1; flashRed = 1; burst(m.x, m.y, '#ff4d5e', 30, 420, .9); burst(m.x, m.y, '#ffd24d', 18, 300, .7); ring(m.x, m.y, '#ff4d5e', 170);
-  banner('BOMB!', 'bomb', 900, `−${TUNING.bombPenaltySeconds}びょう`); Snd.bomb();
+  if (!quietUi()) banner('BOMB!', 'bomb', 900, `−${TUNING.bombPenaltySeconds}びょう`); Snd.bomb();
   comebackDamage();
 }
 // ---- ジェスチャー必殺技: 敵をたおすとゲージがたまり、満タンで ✋パー・✌ピース・✊グー の形を見せて止めると発動 ----
@@ -689,7 +699,7 @@ function updatePlay(dt) {
   testHits(dt);
   monsters = monsters.filter(m => !m.dead);
   recordGhostSamples();
-  if (!lastShown && timeLeft <= 10 && S.time > 12) { lastShown = true; banner('ラスト10びょう！', 'last band', 1400); Snd.alarm(); }
+  if (!lastShown && timeLeft <= 10 && S.time > 12) { lastShown = true; if (!quietUi()) banner('ラスト10びょう！', 'last band', 1400); Snd.alarm(); }   // 時計が赤くなるので、帯は出さなくてもわかる
   const sec = Math.ceil(timeLeft); if (sec !== lastSec) { lastSec = sec; if (sec <= 5 && sec > 0) Snd.tick(); }
   if (timeLeft <= 0) { timeLeft = 0; finishRound(); }
 }
@@ -840,6 +850,7 @@ function setIf(key, v, fn) { if (hc[key] !== v) { hc[key] = v; fn(v); } }
 function updateHUD() {
   const on = state === 'countdown' || state === 'play' || state === 'paused' || state === 'finish';
   setIf('on', on, v => hud.box.classList.toggle('on', v)); if (!on) return;
+  setIf('quiet', quietUi(), v => hud.box.classList.toggle('quiet', v));
   setIf('score', String(Math.round(shown)), v => { hud.score.textContent = v; });
   setIf('time', String(Math.max(0, Math.ceil(timeLeft))), v => { hud.time.textContent = v; });
   setIf('ring', Math.round(clamp(timeLeft / S.time, 0, 1) * 400), v => { hud.ring.style.strokeDashoffset = String(HOLD_C * (1 - v / 400)); });
@@ -1325,5 +1336,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, get spGauge() { return spGauge; }, set spGauge(v) { spGauge = v; }, get barrierT() { return barrierT; }, get gestureTr() { return gestureTr; }, fireSpecial, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, get spGauge() { return spGauge; }, get fx() { return fx; }, set spGauge(v) { spGauge = v; }, get barrierT() { return barrierT; }, get gestureTr() { return gestureTr; }, fireSpecial, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();
