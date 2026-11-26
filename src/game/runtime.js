@@ -313,7 +313,9 @@ let boss = null, bossAppeared = false, bossDefeated = false;
 let previousGhost = null, ghostSamples = [], ghostNextSample = 0;
 let rev = createComeback();   // 逆転ゲージ（激ムズ）
 const revOn = () => comebackEnabled(TUNING.comeback, S.diff), revActive = () => revOn() && comebackActive(rev);
-const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT });
+// assets に bg.mp3（または bgm.mp3 / .ogg / .m4a / .wav）を入れると、プレイ中のBGMになる
+const BGM_URL = qs.get('assets') === '0' ? null : Object.values(import.meta.glob('../../assets/{bg,bgm}.{mp3,ogg,m4a,wav}', { eager: true, query: '?url', import: 'default' }))[0] || null;
+const { Snd, Music } = createAudio({ TUNING, getSound: () => S.sound, getTimeLeft: () => timeLeft, getFever: () => feverT, bgmUrl: BGM_URL });
 const effectState = { get fx() { return fx; }, set fx(value) { fx = value; } };
 const { burst, ring, addText, addSlash, confetti, updateFx } = createEffects({ state: effectState, clamp, rnd, pick, TAU, W, FX, FB });
 const attackState = {
@@ -748,7 +750,7 @@ function toMenu() {
   monsters = []; shots = []; cracks = []; fx = []; feverT = 0; fxEl.textContent = ''; setState('menu'); renderBoard();
   const w = wakeLock; wakeLock = null; if (w) w.release().catch(() => {});
 }
-function pauseGame() { if (state !== 'play') return; setState('paused'); Music.stop(); }
+function pauseGame() { if (state !== 'play') return; setState('paused'); Music.pause(); }
 function togglePause() {
   if (state === 'play') pauseGame();
   else if (state === 'paused') { for (const p of ptrs) { p.ox = p.x; p.oy = p.y; } setState('play'); Music.start(); }
@@ -1213,5 +1215,5 @@ function frame(now) {
 initDeco(); requestAnimationFrame(frame);
 
 // 先生・テスト用: ブラウザのコンソールから状態をのぞける
-window.__fs = { S, TUNING, MON, AI, Motion, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
+window.__fs = { S, TUNING, MON, AI, Motion, Music, ptrs, SPR, get state() { return state; }, get mode() { return runMode; }, get score() { return score; }, get combo() { return maxCombo; }, get kills() { return kills; }, get bombs() { return bombs; }, get monsters() { return monsters; }, get timeLeft() { return timeLeft; }, set timeLeft(v) { timeLeft = v; }, get boss() { return boss; }, get bossAppeared() { return bossAppeared; }, get shots() { return shots; }, get reflects() { return reflects; }, get shotHits() { return shotHits; }, get combo2() { return combo; }, get ghostSamples() { return ghostSamples; }, get previousGhost() { return previousGhost; }, get elapsed() { return elapsed; }, launchShot, get feverT() { return feverT; }, get rev() { return rev; }, spawn, startFlow, updatePlay, testHits, renderBoard, banner, confetti };
 if (qs.get('autostart') === '1') startFlow();

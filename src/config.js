@@ -8,6 +8,8 @@ const TUNING = {
   boothMinHandPx: 18,      // ブース: これより小さく写った手（うしろに並んでいる人の手）は無視する
   attractPageSeconds: 7,   // 待機画面: ランキング／あそびかた／モンスター を切りかえる間かく
   music: true,             // プレイ中のBGM
+  bgmVolume: 0.5,          // BGM（assets/bg.mp3）の音量（0〜1）
+  bgmLastRate: 1.1,        // ラスト10びょうで BGM を何倍の速さにするか（1 なら変えない）
   // 手の追いかけ方（ずれが気になるときはここを調整）
   ai: {
     pipelineMs: 40,     // カメラ→AIまでの、測れない遅れの見込み（ミリ秒）。点が手より遅れるなら大きく、行きすぎるなら小さく

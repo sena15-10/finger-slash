@@ -1,4 +1,4 @@
-export function createAudio({ TUNING, getSound, getTimeLeft, getFever }) {
+export function createAudio({ TUNING, getSound, getTimeLeft, getFever, bgmUrl = null }) {
 // ============================================================
 const Snd = {
   ctx: null, master: null, bus: null, _nb: null,
@@ -63,11 +63,27 @@ const Snd = {
   clang() { this.tone(1760, .12, 'square', .12, 2400); this.tone(2640, .2, 'triangle', .12); this.noise(.12, .18, 6000, 0, 'highpass'); },
   impact() { this.noise(.6, .55, 600); this.tone(90, .45, 'sawtooth', .3, 40); this.noise(.3, .25, 7000, .05, 'highpass'); },
 };
-// プレイ中のBGM（4小節をくりかえす。FEVER中は音が増え、ラスト10びょうで速くなる）
+// プレイ中のBGM。assets に bg.mp3 などの音楽ファイルがあれば、それをくりかえし流す（ラスト10びょうで少し速くなる）。
+// ファイルがなければ、プログラムで作った曲（4小節をくりかえす。FEVER中は音が増え、ラスト10びょうで速くなる）を流す
+const file = bgmUrl && typeof Audio !== 'undefined' ? Object.assign(new Audio(bgmUrl), { loop: true, preload: 'auto' }) : null;
 const Music = {
-  on: false, timer: 0, next: 0, step: 0,
-  start() { if (!TUNING.music || !Snd.ctx) return; this.stop(); this.on = true; this.step = 0; this.next = Snd.ctx.currentTime + .06; this.timer = setInterval(() => this.tick(), 25); },
-  stop() { this.on = false; clearInterval(this.timer); },
+  on: false, timer: 0, next: 0, step: 0, file,
+  start() {
+    if (!TUNING.music) return;
+    if (file) {
+      clearInterval(this.timer); this.on = true; this.fileTick();
+      file.play().catch(() => {});   // ブラウザが再生を止めたときは、何もしない（効果音だけで遊べる）
+      this.timer = setInterval(() => this.fileTick(), 100); return;
+    }
+    if (!Snd.ctx) return; this.stop(); this.on = true; this.step = 0; this.next = Snd.ctx.currentTime + .06; this.timer = setInterval(() => this.tick(), 25);
+  },
+  // 一時停止: 音楽ファイルは、再開したときに続きから流す
+  pause() { if (!file) { this.stop(); return; } this.on = false; clearInterval(this.timer); file.pause(); },
+  stop() { this.on = false; clearInterval(this.timer); if (file) { file.pause(); try { file.currentTime = 0; } catch (e) { /* 読みこみ前 */ } } },
+  fileTick() {
+    file.volume = getSound() ? (TUNING.bgmVolume ?? .5) : 0;   // 音OFFにしたら、すぐ消す
+    file.playbackRate = getTimeLeft() <= 10 ? (TUNING.bgmLastRate ?? 1.1) : 1;
+  },
   tick() {
     if (!this.on || !Snd.ok()) return;
     const c = Snd.ctx, bpm = getTimeLeft() <= 10 ? 150 : 132, spb = 60 / bpm / 4;

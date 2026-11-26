@@ -33,6 +33,10 @@ Netlify Drop などへ公開するときは、`dist/` の中身をアップロ�
 - `src/game/ghost.js` は前のプレイヤーの記録の圧縮・補間を担当します。
 - `assets/` に背景透過の `slime.png`、`ghost.png`、`bat.png`、`golem.png`、`star.png`、`bomb.png`、`fireball.png`、`boss.png` を置くと、対応する絵に差し替わります。
 
+## BGM
+
+`assets/` に `bg.mp3`（`bgm.mp3`、`.ogg`・`.m4a`・`.wav` でも可）を置くと、プレイ中にくりかえし流れます。ファイルがないときは、プログラムで作った曲が流れます。音量は `TUNING.bgmVolume`、ラスト10びょうの速さは `TUNING.bgmLastRate` で調整できます。
+
 ## 激ムズモード
 
 メニューの LEVEL で「☠ 激ムズ」を選ぶか、URLに `?diff=extreme` を付けると遊べます。
